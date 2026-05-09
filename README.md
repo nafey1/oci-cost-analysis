@@ -4,14 +4,7 @@ Node.js and Express dashboard for scanning Oracle Cloud Infrastructure Cost Anal
 
 The app uses the local OCI CLI `DEFAULT` profile by default, reads cost data from the tenancy home region, and renders an interactive browser dashboard for grouped usage, service/SKU spend, region activity, compartment cost, daily trends, and billing-period summaries.
 
-## Latest Improvements
-
-- Added clickable legend behavior and visible-total updates for applicable charts, including grouped usage, service/region matrix, compartment cost, unit economics, cost composition, daily cost, region drift, and long-tail SKU spend.
-- Replaced the congested long-tail word cloud with a ranked Long-Tail SKU Spend Ladder that handles high-SKU billing periods more cleanly.
-- Added full SKU-description tooltips for Service Cards With Nested Top SKUs, including grouped rows with multiple descriptions.
-- Disabled annoying inside zoom behavior on Grouped Usage and Compartment Cost by Depth while keeping useful zoom controls on charts that need them.
-- Prevented initial page load from auto-scanning; the dashboard now populates dates and waits for the user to click Refresh.
-- Added file-backed report persistence so the last dashboard scan can reload on page open, and previous matching scans can render immediately while a fresh OCI scan runs.
+![OCI Cost Analysis Dashboard walkthrough](docs/images/oci-cost-analysis-dashboard.gif)
 
 ## Quick Start
 
@@ -581,3 +574,12 @@ Verify `PERSIST_REPORTS=true`, `OCI_COST_DATA_DIR` points to a writable director
 - Added summary panels for billing period, unique SKUs, active regions, daily average, and peak daily cost.
 - Added theme selection, OCI branding, chart download buttons, and chart/table tooltips.
 - Limited compartment depth filtering to level 5 and clarified inclusive/exclusive analysis dates.
+
+## Latest Improvements
+
+- Added clickable legend behavior and visible-total updates for applicable charts, including grouped usage, service/region matrix, compartment cost, unit economics, cost composition, daily cost, region drift, and long-tail SKU spend.
+- Replaced the congested long-tail word cloud with a ranked Long-Tail SKU Spend Ladder that handles high-SKU billing periods more cleanly.
+- Added full SKU-description tooltips for Service Cards With Nested Top SKUs, including grouped rows with multiple descriptions.
+- Disabled annoying inside zoom behavior on Grouped Usage and Compartment Cost by Depth while keeping useful zoom controls on charts that need them.
+- Prevented initial page load from auto-scanning; the dashboard now populates dates and waits for the user to click Refresh.
+- Added file-backed report persistence so the last dashboard scan can reload on page open, and previous matching scans can render immediately while a fresh OCI scan runs.
