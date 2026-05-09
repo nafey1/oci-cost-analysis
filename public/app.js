@@ -2,6 +2,7 @@ const form = document.querySelector('#usageForm');
 const rowsEl = document.querySelector('#usageRows');
 const statusText = document.querySelector('#statusText');
 const scanStatus = document.querySelector('#scanStatus');
+const scanDetail = document.querySelector('#scanDetail');
 const totalCost = document.querySelector('#totalCost');
 const totalUsage = document.querySelector('#totalUsage');
 const rowCount = document.querySelector('#rowCount');
@@ -110,7 +111,7 @@ const tableColumns = [
 ];
 
 applyTheme(localStorage.getItem('oci-cost-theme') || 'light', false);
-loadDefaults().then(loadReport).catch(showError);
+loadDefaults().catch(showError);
 
 form.addEventListener('submit', (event) => {
   event.preventDefault();
@@ -208,7 +209,8 @@ function clearEndDateWhenStartIsAfterEnd() {
 
 async function loadReport() {
   const scanId = ++activeScanId;
-  setScanState('scanning', 'Scanning');
+  const scanStartedAt = performance.now();
+  setScanState('scanning', 'Scanning', 'Fetching usage, chart datasets, and daily detail');
   statusText.textContent = 'Scanning';
   insightStatus.textContent = 'Scanning charts';
   updateFooterWindow(form.start.value, form.end.value);
@@ -219,9 +221,10 @@ async function loadReport() {
   excelDownload.disabled = true;
   const params = new URLSearchParams(new FormData(form));
   csvLink.href = `/api/usage.csv?${params}`;
+  let report;
 
   try {
-    const report = await fetchReport(params);
+    report = await fetchReport(params);
     if (!isActiveScan(scanId)) return;
     renderReport(report);
   } catch (error) {
@@ -233,14 +236,14 @@ async function loadReport() {
     currentInsights = await loadInsightReports(params);
     if (!isActiveScan(scanId)) return;
     renderInsights(currentInsights);
-    setScanState('complete', 'Scan complete');
+    setScanState('complete', 'Scan complete', scanCompletionDetail(report, currentInsights, performance.now() - scanStartedAt));
   } catch (error) {
     if (!isActiveScan(scanId)) return;
     currentInsights = undefined;
     insightStatus.textContent = error.message || 'Unable to load charts';
     setBillingSummaryUnavailable();
     drawUnavailableInsightCharts();
-    setScanState('complete', 'Scan complete');
+    setScanState('complete', 'Scan complete', scanCompletionDetail(report, currentInsights, performance.now() - scanStartedAt, error));
   } finally {
     if (isActiveScan(scanId)) excelDownload.disabled = false;
   }
@@ -435,7 +438,7 @@ function renderInsights(insights) {
   renderBillingPeriodSummary(insights);
 
   if (insights.service) {
-    drawRegionHeatGrid(serviceRows);
+    drawRegionHeatGrid(serviceRows, skuRows);
     drawServiceRegionMatrix(serviceRows);
     drawCostDonut(serviceRows);
     setChartTotal('regionHeat', sumCost(serviceRows));
@@ -454,7 +457,7 @@ function renderInsights(insights) {
     drawWaterfallChart(skuRows);
     drawUnitEconomicsScatter(skuRows);
     drawSkuPareto(skuRows);
-    drawSpendWordCloud(skuRows);
+    drawSpendLadder(skuRows);
     drawServiceSkuDescriptionTree(skuRows);
     setChartTotal('waterfall', sumCost(skuRows));
     setChartTotal('scatter', sumCost(skuRows.filter((row) => row.cost > 0 && row.usage > 0)));
@@ -559,6 +562,15 @@ function drawGroupedUsageChart(rows, metric) {
   }
 
   const values = rows.map((row) => metric.value(row));
+  const regions = aggregateRows(rows, (row) => row.region || 'Unspecified')
+    .sort((a, b) => Math.abs(b.cost) - Math.abs(a.cost) || a.key.localeCompare(b.key))
+    .map((row) => row.key);
+  const regionTotals = regions.map((region) => ({
+    name: region,
+    value: rows
+      .filter((row) => (row.region || 'Unspecified') === region)
+      .reduce((sum, row) => sum + (row.cost || 0), 0)
+  }));
   chart.setOption({
     ...baseChartOption(),
     tooltip: {
@@ -566,42 +578,55 @@ function drawGroupedUsageChart(rows, metric) {
       trigger: 'axis',
       axisPointer: { type: 'shadow' },
       formatter: (items) => {
-        const item = items[0];
-        const row = rows[item.dataIndex];
+        const item = (Array.isArray(items) ? items : [items]).find((entry) => entry.data?.row);
+        const row = item?.data?.row || rows[item?.dataIndex || 0];
         return tooltipLines(row.group, [
           ['Region', row.region || 'Unspecified'],
           ['Cost', formatCost(row.cost || 0)],
-          ['Usage', number.format(row.usage || 0)],
-          ['Rows', number.format(row.count || 0)]
+          ['Usage', number.format(row.usage || 0)]
         ]);
       }
     },
-    grid: { left: 220, right: 92, top: 16, bottom: 28 },
+    legend: {
+      show: regions.length > 1,
+      type: 'scroll',
+      right: 8,
+      top: 0,
+      selectedMode: 'multiple',
+      textStyle: { color: colorVar('--ink'), fontWeight: 800 }
+    },
+    grid: { left: 220, right: regions.length > 1 ? 132 : 92, top: regions.length > 1 ? 36 : 16, bottom: 28 },
     xAxis: valueAxis({ formatter: formatAxisCost, min: Math.min(0, ...values), max: Math.max(0, ...values) }),
     yAxis: categoryAxis(rows.map((row) => row.group || 'All Usage'), { inverse: true, width: 200 }),
-    dataZoom: rows.length > 8 ? [{ type: 'inside', yAxisIndex: 0 }] : [],
-    series: [{
+    series: regions.map((region) => ({
+      name: region,
       type: 'bar',
-      data: rows.map((row) => ({
-        value: metric.value(row),
-        itemStyle: {
-          color: categorySeriesColor(row.group || row.region || 'All Usage', 0.9),
-          borderColor: metric.value(row) < 0 ? '#8b3a3a' : 'transparent',
-          borderWidth: metric.value(row) < 0 ? 1 : 0
-        }
-      })),
+      itemStyle: { color: regionSeriesColor(region) },
+      data: rows.map((row) => {
+        if ((row.region || 'Unspecified') !== region) return null;
+        return {
+          value: metric.value(row),
+          row,
+          itemStyle: {
+            color: regionSeriesColor(region),
+            borderColor: metric.value(row) < 0 ? '#8b3a3a' : 'transparent',
+            borderWidth: metric.value(row) < 0 ? 1 : 0
+          }
+        };
+      }),
       barMaxWidth: 24,
       label: {
         show: true,
         position: 'right',
         color: colorVar('--ink'),
-        formatter: ({ value }) => metric.format(value)
+        formatter: ({ data }) => data?.row ? metric.format(data.value) : ''
       }
-    }]
+    }))
   }, true);
+  syncLegendPanelTotal(chart, 'usage', regionTotals);
 }
 
-function drawRegionHeatGrid(rows) {
+function drawRegionHeatGrid(rows, skuRows = []) {
   const regions = aggregateRows(rows, (row) => row.region || 'Unspecified')
     .filter((row) => row.cost !== 0)
     .sort((a, b) => Math.abs(b.cost) - Math.abs(a.cost));
@@ -614,10 +639,14 @@ function drawRegionHeatGrid(rows) {
     ...baseChartOption(),
     tooltip: {
       ...tooltipOption(),
-      formatter: ({ data }) => tooltipLines(data.name, [
-        ['Cost', formatCost(data.rawCost)],
-        ['Rows', number.format(data.count)]
-      ])
+      formatter: ({ data, name, value }) => {
+        const info = data || {};
+        const cost = Number.isFinite(Number(info.rawCost)) ? info.rawCost : Number(value) || 0;
+        return tooltipLines(info.name || name || 'Region', [
+          ['Cost', formatCost(cost)],
+          ['Total SKUs used', info.skuCount === undefined ? 'Unavailable' : number.format(info.skuCount)]
+        ]);
+      }
     },
     series: [{
       type: 'treemap',
@@ -631,7 +660,7 @@ function drawRegionHeatGrid(rows) {
         name: row.key,
         value: Math.abs(row.cost),
         rawCost: row.cost,
-        count: row.count,
+        skuCount: totalSkusForRegion(skuRows, row.key),
         itemStyle: { color: regionSeriesColor(row.key) }
       }))
     }]
@@ -679,9 +708,15 @@ function drawWaterfallChart(rows) {
         ]);
       }
     },
-    grid: { left: 190, right: 76, top: 16, bottom: 28 },
+    grid: { left: 238, right: 76, top: 16, bottom: 28 },
     xAxis: valueAxis({ formatter: formatAxisCost }),
-    yAxis: categoryAxis(top.map((row) => row.group), { inverse: true, width: 170 }),
+    yAxis: categoryAxis(top.map(waterfallAxisLabel), {
+      inverse: true,
+      width: 216,
+      overflow: 'break',
+      fontSize: 11,
+      lineHeight: 13
+    }),
     series: [
       {
         name: 'Base',
@@ -733,35 +768,67 @@ function drawServiceRegionMatrix(rows) {
     }
   }
   const maxMagnitude = Math.max(...cells.map((item) => item.magnitude), 1);
-  const data = cells.map((item) => ({
-    value: [item.regionIndex, item.serviceIndex, item.magnitude, item.cost],
-    itemStyle: { color: categorySeriesColor(item.service, 0.35 + 0.58 * (item.magnitude / maxMagnitude)) }
+  const serviceTotals = services.map((service) => ({
+    name: service,
+    value: cells
+      .filter((item) => item.service === service)
+      .reduce((sum, item) => sum + item.cost, 0)
   }));
+  const compact = (serviceRegionMatrix.clientWidth || 0) < 760;
 
-  chartFor(serviceRegionMatrix).setOption({
+  const chart = chartFor(serviceRegionMatrix);
+  chart.setOption({
     ...baseChartOption(),
     tooltip: {
       ...tooltipOption(),
-      formatter: ({ data: item }) => tooltipLines(services[item.value[1]], [
+      formatter: ({ data: item, seriesName }) => tooltipLines(seriesName, [
         ['Region', regions[item.value[0]]],
         ['Cost', formatCost(item.value[3])]
       ])
     },
-    grid: { left: 230, right: 40, top: 34, bottom: 54 },
+    legend: {
+      type: 'scroll',
+      orient: 'horizontal',
+      left: compact ? 18 : 230,
+      right: 18,
+      bottom: 8,
+      height: 44,
+      selectedMode: 'multiple',
+      icon: 'roundRect',
+      itemWidth: 13,
+      itemHeight: 9,
+      itemGap: 14,
+      pageButtonGap: 8,
+      pageIconColor: colorVar('--brand'),
+      pageIconInactiveColor: colorWithAlpha(colorVar('--muted'), 0.42),
+      pageTextStyle: { color: colorVar('--muted'), fontWeight: 800 },
+      formatter: (name) => truncate(name, compact ? 18 : 30),
+      tooltip: { show: true },
+      textStyle: { color: colorVar('--ink'), fontWeight: 800 }
+    },
+    grid: { left: compact ? 184 : 230, right: 36, top: 28, bottom: 96 },
     xAxis: categoryAxis(regions, { axisLabelRotate: 0 }),
     yAxis: categoryAxis(services, { inverse: true, width: 210 }),
     visualMap: { show: false, min: 0, max: maxMagnitude },
-    series: [{
+    series: services.map((service) => ({
+      name: service,
       type: 'heatmap',
-      data,
+      itemStyle: { color: categorySeriesColor(service) },
+      data: cells
+        .filter((item) => item.service === service)
+        .map((item) => ({
+          value: [item.regionIndex, item.serviceIndex, item.magnitude, item.cost],
+          itemStyle: { color: categorySeriesColor(item.service, 0.35 + 0.58 * (item.magnitude / maxMagnitude)) }
+        })),
       label: {
         show: true,
         color: colorVar('--ink'),
         formatter: ({ data: item }) => formatCost(item.value[3])
       },
       emphasis: { itemStyle: { borderColor: colorVar('--ink'), borderWidth: 1 } }
-    }]
+    }))
   }, true);
+  syncLegendPanelTotal(chart, 'matrix', serviceTotals);
 }
 
 function drawCompartmentCostChart(rows, query = {}) {
@@ -794,24 +861,45 @@ function drawCompartmentCostChart(rows, query = {}) {
   const labels = chartRows.map((row) => displayCompartmentPath(row.path));
   const depthText = compartmentDepthDescription(query);
   const legendTop = regions.length > 1 ? 8 : 0;
+  const regionChartTotals = regions.map((region) => ({
+    name: region,
+    value: chartRows.reduce((sum, row) => sum + (row.regionCosts.get(region) || 0), 0)
+  }));
+  let selectedRegions = {};
+  const visibleRegionCost = (row, selected = selectedRegions) => regions.reduce((sum, region) => (
+    selected[region] === false ? sum : sum + (row.regionCosts.get(region) || 0)
+  ), 0);
+  const visibleRegionLines = (row, selected = selectedRegions) => Array.from(row.regionCosts.entries())
+    .filter(([region, cost]) => selected[region] !== false && Math.abs(cost || 0) > 0.000001)
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]) || a[0].localeCompare(b[0]))
+    .slice(0, 5)
+    .map(([region, cost]) => [`${region} cost`, formatCost(cost)]);
+  const visibleCompartmentLabelData = (selected = selectedRegions) => chartRows.map((row) => {
+    const cost = visibleRegionCost(row, selected);
+    return {
+      value: [cost, displayCompartmentPath(row.path)],
+      totalCost: cost
+    };
+  });
 
-  chartFor(compartmentChart).setOption({
+  const chart = chartFor(compartmentChart);
+  chart.setOption({
     ...baseChartOption(),
     tooltip: {
       ...tooltipOption(),
       trigger: 'axis',
+      triggerOn: 'mousemove',
       axisPointer: { type: 'shadow' },
       formatter: (items) => {
-        const row = items.find((item) => item.data?.compartment)?.data.compartment;
+        const tooltipItems = Array.isArray(items) ? items : [items];
+        const item = tooltipItems.find((entry) => entry.seriesType === 'bar' && entry.dataIndex !== undefined);
+        const row = chartRows[item?.data?.compartmentIndex ?? item?.dataIndex ?? -1];
         if (!row) return '';
-        const regionLines = Array.from(row.regionCosts.entries())
-          .filter(([, cost]) => Math.abs(cost || 0) > 0.000001)
-          .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]) || a[0].localeCompare(b[0]))
-          .slice(0, 5)
-          .map(([region, cost]) => [`${region} cost`, formatCost(cost)]);
+        const visibleCost = visibleRegionCost(row);
+        const regionLines = visibleRegionLines(row);
         return tooltipLines(displayCompartmentPath(row.path), [
-          ['Net cost', formatCost(row.cost || 0)],
-          ['Share of shown cost', percent.format(Math.abs(row.cost || 0) / totalMagnitude)],
+          ['Visible net cost', formatCost(visibleCost)],
+          ['Share of shown cost', percent.format(Math.abs(visibleCost || 0) / totalMagnitude)],
           ['Usage', number.format(row.usage || 0)],
           ['Rows', number.format(row.count || 0)],
           ['Dominant region', row.dominantRegion || 'Unspecified'],
@@ -826,12 +914,12 @@ function drawCompartmentCostChart(rows, query = {}) {
       type: 'scroll',
       top: legendTop,
       right: 8,
+      selectedMode: 'multiple',
       textStyle: { color: colorVar('--ink'), fontWeight: 700 }
     },
     grid: { left: 260, right: 112, top: regions.length > 1 ? 46 : 20, bottom: 42 },
     xAxis: valueAxis({ formatter: formatAxisCost }),
     yAxis: categoryAxis(labels, { inverse: true, width: 238 }),
-    dataZoom: chartRows.length > 8 ? [{ type: 'inside', yAxisIndex: 0 }] : [],
     graphic: {
       type: 'text',
       right: 18,
@@ -848,27 +936,31 @@ function drawCompartmentCostChart(rows, query = {}) {
         name: region,
         type: 'bar',
         stack: 'compartment-cost',
-        data: chartRows.map((row) => ({
+        itemStyle: {
+          color: regionSeriesColor(region),
+          borderColor: colorVar('--panel'),
+          borderWidth: 1
+        },
+        data: chartRows.map((row, index) => ({
           value: row.regionCosts.get(region) || 0,
-          compartment: row,
+          compartmentIndex: index,
           itemStyle: {
-            color: regionSeriesColor(region, 0.86),
+            color: regionSeriesColor(region),
             borderColor: colorVar('--panel'),
             borderWidth: 1
           }
         })),
         barMaxWidth: 24,
-        emphasis: { focus: 'series' }
+        selectedMode: false,
+        emphasis: { focus: 'self' }
       })),
       {
+        id: 'compartment-net-label',
         name: 'Net cost label',
         type: 'scatter',
         symbolSize: 0,
         silent: true,
-        data: chartRows.map((row) => ({
-          value: [row.cost || 0, displayCompartmentPath(row.path)],
-          totalCost: row.cost || 0
-        })),
+        data: visibleCompartmentLabelData(),
         label: {
           show: true,
           position: 'right',
@@ -880,6 +972,23 @@ function drawCompartmentCostChart(rows, query = {}) {
       }
     ]
   }, true);
+  chart.off('click');
+  chart.getZr().off('click');
+  chart.getZr().on('click', () => {
+    chart.dispatchAction({ type: 'hideTip' });
+    chart.dispatchAction({ type: 'downplay' });
+  });
+  syncLegendPanelTotal(chart, 'compartment', regionChartTotals, {
+    onUpdate: (_visibleTotal, selected) => {
+      selectedRegions = selected || {};
+      chart.setOption({
+        series: [{
+          id: 'compartment-net-label',
+          data: visibleCompartmentLabelData(selectedRegions)
+        }]
+      });
+    }
+  });
 }
 
 function drawUnitEconomicsScatter(rows) {
@@ -889,33 +998,112 @@ function drawUnitEconomicsScatter(rows) {
     return;
   }
 
-  chartFor(scatterChart).setOption({
+  const scatterPoints = scatterSignalPoints(points);
+  const regionGroups = aggregateRows(scatterPoints, (row) => row.region || 'Unspecified')
+    .sort((a, b) => Math.abs(b.cost) - Math.abs(a.cost) || a.key.localeCompare(b.key))
+    .map((row) => row.key);
+  const regionTotals = regionGroups.map((region) => ({
+    name: region,
+    value: scatterPoints
+      .filter((row) => (row.region || 'Unspecified') === region)
+      .reduce((sum, row) => sum + (row.cost || 0), 0)
+  }));
+
+  const chart = chartFor(scatterChart);
+  chart.setOption({
     ...baseChartOption(),
     tooltip: {
       ...tooltipOption(),
       formatter: ({ data }) => {
-        const value = data.value || data;
-        return tooltipLines(value[3], [
-          ['Region', value[4]],
-          ['Cost', formatCost(value[1])],
-          ['Usage', number.format(value[0])],
-          ['Rows', number.format(value[2])]
-        ]);
+        const info = data?.info || {};
+        const title = info.title || info.group || 'Usage point';
+        const details = [
+          ['Region', info.region || 'Unspecified'],
+          ['Cost', formatCost(info.cost || 0)],
+          ['Usage', number.format(info.usage || 0)]
+        ];
+        if (info.isAggregate) {
+          details.push(['SKU groups represented', number.format(info.groupCount || 0)]);
+        } else {
+          details.push(['Rows', number.format(info.count || 0)]);
+        }
+        details.push(['Cost per usage', formatCost((info.cost || 0) / Math.max(info.usage || 0, 1))]);
+        return tooltipLines(title, details);
       }
     },
-    grid: { left: 54, right: 22, top: 18, bottom: 42 },
+    legend: {
+      type: 'scroll',
+      right: 8,
+      top: 2,
+      selectedMode: 'multiple',
+      textStyle: { color: colorVar('--ink'), fontWeight: 800 }
+    },
+    grid: { left: 54, right: 22, top: regionGroups.length > 1 ? 34 : 18, bottom: 42 },
     xAxis: valueAxis({ name: 'Usage', type: 'log', formatter: formatAxisNumber }),
     yAxis: valueAxis({ name: 'Cost', type: 'log', formatter: formatAxisCost }),
-    series: [{
+    series: regionGroups.map((region) => ({
+      name: region,
       type: 'scatter',
-      data: points.map((row) => ({
-        value: [row.usage, row.cost, row.count || 1, row.group, row.region || 'Unspecified'],
-        itemStyle: { color: categorySeriesColor(row.group || row.region || 'Usage point', 0.84) }
-      })),
-      symbolSize: (item) => Math.min(24, 6 + Math.sqrt(item[2] || 1) * 2),
+      itemStyle: { color: scatterPointColor(region) },
+      data: scatterPoints
+        .filter((row) => (row.region || 'Unspecified') === region)
+        .map((row) => ({
+          value: [row.usage, row.cost, row.count || 1],
+          info: row,
+          symbol: row.isAggregate ? 'diamond' : 'circle',
+          itemStyle: {
+            color: scatterPointColor(row.region || region),
+            borderColor: row.isAggregate ? colorVar('--ink') : colorVar('--panel'),
+            borderWidth: row.isAggregate ? 1 : 0
+          }
+        })),
+      symbolSize: (item, params) => (
+        params?.data?.info?.isAggregate
+          ? 16
+          : Math.min(20, 5 + Math.sqrt(item[2] || 1) * 1.7)
+      ),
       emphasis: { focus: 'series' }
-    }]
+    }))
   }, true);
+  syncLegendPanelTotal(chart, 'scatter', regionTotals);
+}
+
+function scatterPointColor(region) {
+  return region === 'Long tail'
+    ? categorySeriesColor('Long tail')
+    : regionSeriesColor(region);
+}
+
+function scatterSignalPoints(points) {
+  const keep = new Set();
+  const totalCost = sumCost(points);
+  const materialCost = Math.max(totalCost * 0.001, 0.01);
+  const byCost = points.slice().sort((a, b) => b.cost - a.cost || b.usage - a.usage);
+  const byUsage = points.slice().sort((a, b) => b.usage - a.usage || b.cost - a.cost);
+  const byUnitCost = points
+    .filter((row) => row.cost >= materialCost)
+    .slice()
+    .sort((a, b) => (b.cost / Math.max(b.usage, 1)) - (a.cost / Math.max(a.usage, 1)) || b.cost - a.cost);
+
+  for (const row of byCost.slice(0, 10)) keep.add(row);
+  for (const row of byUsage.slice(0, 5)) keep.add(row);
+  for (const row of byUnitCost.slice(0, 4)) keep.add(row);
+
+  const visible = points.filter((row) => keep.has(row));
+  const hidden = points.filter((row) => !keep.has(row));
+  if (!hidden.length) return visible;
+
+  visible.push({
+    group: `Long tail (${number.format(hidden.length)} small SKU groups)`,
+    title: `Long tail (${number.format(hidden.length)} small SKU groups)`,
+    region: 'Long tail',
+    cost: hidden.reduce((sum, row) => sum + (row.cost || 0), 0),
+    usage: hidden.reduce((sum, row) => sum + (row.usage || 0), 0),
+    count: hidden.reduce((sum, row) => sum + (row.count || 0), 0),
+    groupCount: hidden.length,
+    isAggregate: true
+  });
+  return visible;
 }
 
 function drawSkuPareto(rows) {
@@ -1023,7 +1211,10 @@ function drawSkuPareto(rows) {
             borderWidth: 1,
             fontWeight: 900,
             padding: [3, 6],
-            position: 'insideStartTop'
+            position: 'insideEndTop',
+            distance: 6,
+            align: 'right',
+            verticalAlign: 'bottom'
           },
           data: [{ yAxis: 0.8 }]
         }
@@ -1040,114 +1231,287 @@ function drawCostDonut(rows) {
     return;
   }
 
-  const top = services.slice(0, 6);
-  const remainingServices = services.slice(6);
+  const top = services.slice(0, 7);
+  const remainingServices = services.slice(7);
   const otherCost = remainingServices.reduce((sum, row) => sum + row.cost, 0);
   if (otherCost > 0) {
     top.push({ key: 'Other', cost: otherCost, count: 0, usage: 0, region: dominantRegion(remainingServices) });
   }
-  const total = top.reduce((sum, row) => sum + row.cost, 0);
+  const total = services.reduce((sum, row) => sum + row.cost, 0);
+  const compact = (donutChart.clientWidth || 0) < 540;
+  const compositionRows = top.map((row) => ({
+    ...row,
+    share: total ? row.cost / total : 0
+  }));
+  const chartData = compositionRows.map((row) => ({
+    name: row.key,
+    value: row.cost,
+    info: row,
+    itemStyle: { color: categorySeriesColor(row.key, 0.92) }
+  }));
+  const legendData = compositionRows.map((row) => row.key);
+  const compositionTooltip = ({ name, value, data }) => {
+    const info = data?.info || compositionRows.find((row) => row.key === name) || {};
+    const share = info.share ?? (total ? (Number(value) || 0) / total : 0);
+    return tooltipLines(info.key || name, [
+      ['Cost', formatCost(value)],
+      ['Share', percent.format(share)],
+      ['Dominant region', info.region || 'Unspecified']
+    ]);
+  };
+  const visibleComposition = (selected = {}) => compositionRows.filter((row) => selected[row.key] !== false);
+  const syncVisibleCompositionTotal = (chart, selected = {}) => {
+    const visibleRows = visibleComposition(selected);
+    const visibleTotal = visibleRows.reduce((sum, row) => sum + row.cost, 0);
+    setChartTotal('donut', visibleTotal);
+    chart.setOption({
+      graphic: [
+        {
+          id: 'costCompositionTotal',
+          style: { text: formatCost(visibleTotal) }
+        },
+        {
+          id: 'costCompositionCount',
+          style: { text: `${number.format(visibleRows.length)} of ${number.format(compositionRows.length)} cost groups shown` }
+        }
+      ]
+    });
+  };
 
-  chartFor(donutChart).setOption({
+  const chart = chartFor(donutChart);
+  chart.off('legendselectchanged');
+  chart.setOption({
     ...baseChartOption(),
     tooltip: {
       ...tooltipOption(),
       trigger: 'item',
-      formatter: ({ name, value, percent: share }) => tooltipLines(name, [
-        ['Cost', formatCost(value)],
-        ['Share', `${share.toFixed(1)}%`],
-        ['Dominant region', top.find((row) => row.key === name)?.region || 'Unspecified']
-      ])
+      formatter: compositionTooltip
     },
-    legend: { show: false },
-    series: [{
-      type: 'pie',
-      radius: ['42%', '64%'],
-      center: ['50%', '54%'],
-      avoidLabelOverlap: true,
-      label: {
-        show: true,
-        alignTo: 'edge',
-        edgeDistance: 24,
-        bleedMargin: 12,
-        formatter: ({ name, percent: share }) => `${wrapChartLabel(name, donutChart.clientWidth > 900 ? 24 : 18)}\n${share.toFixed(1)}%`,
+    legend: {
+      show: true,
+      type: 'scroll',
+      orient: compact ? 'horizontal' : 'vertical',
+      selectedMode: 'multiple',
+      left: compact ? 18 : 18,
+      top: compact ? 52 : 46,
+      bottom: compact ? undefined : 26,
+      width: compact ? '92%' : 228,
+      height: compact ? 66 : undefined,
+      data: legendData,
+      icon: 'roundRect',
+      itemWidth: 13,
+      itemHeight: 9,
+      itemGap: compact ? 12 : 13,
+      pageButtonGap: 8,
+      pageIconColor: colorVar('--brand'),
+      pageIconInactiveColor: colorWithAlpha(colorVar('--muted'), 0.42),
+      pageTextStyle: { color: colorVar('--muted'), fontWeight: 800 },
+      formatter: (name) => truncate(name, compact ? 18 : 24),
+      textStyle: {
         color: colorVar('--ink'),
-        fontSize: 12,
-        fontWeight: 800,
-        lineHeight: 15
-      },
-      labelLine: {
-        length: 18,
-        length2: 28,
-        maxSurfaceAngle: 80,
-        lineStyle: { width: 1.4 }
-      },
-      data: top.map((row) => ({ name: row.key, value: row.cost, itemStyle: { color: categorySeriesColor(row.key, 0.92) } }))
-    }],
-    graphic: [{
-      type: 'text',
-      left: 'center',
-      top: 'middle',
-      style: {
-        text: formatCost(total),
-        fill: colorVar('--ink'),
-        fontSize: 14,
-        fontWeight: 800,
-        textAlign: 'center'
+        rich: {
+          name: {
+            color: colorVar('--ink'),
+            fontSize: 12,
+            fontWeight: 900,
+            lineHeight: 15
+          },
+          meta: {
+            color: colorVar('--muted'),
+            fontSize: 11,
+            fontWeight: 800,
+            lineHeight: 14
+          }
+        }
       }
-    }]
+    },
+    series: [
+      {
+        name: 'Cost composition',
+        type: 'pie',
+        radius: compact ? ['32%', '52%'] : ['34%', '58%'],
+        center: compact ? ['50%', '64%'] : ['70%', '58%'],
+        startAngle: 118,
+        clockwise: true,
+        minAngle: 4,
+        avoidLabelOverlap: true,
+        itemStyle: {
+          borderColor: colorVar('--panel'),
+          borderRadius: 5,
+          borderWidth: 3
+        },
+        label: {
+          show: false
+        },
+        labelLine: { show: false },
+        emphasis: {
+          scaleSize: 8,
+          itemStyle: {
+            shadowBlur: 18,
+            shadowColor: colorWithAlpha(colorVar('--shadow'), 0.45)
+          }
+        },
+        data: chartData
+      }
+    ],
+    graphic: [
+      {
+        id: 'costCompositionTotal',
+        type: 'text',
+        z: 20,
+        right: compact ? 24 : 30,
+        top: 18,
+        style: {
+          text: formatCost(total),
+          fill: colorVar('--ink'),
+          fontSize: compact ? 16 : 18,
+          fontWeight: 900,
+          textAlign: 'right'
+        }
+      },
+      {
+        id: 'costCompositionTotalLabel',
+        type: 'text',
+        z: 20,
+        right: compact ? 24 : 30,
+        top: compact ? 40 : 42,
+        style: {
+          text: 'visible net cost',
+          fill: colorVar('--muted'),
+          fontSize: 11,
+          fontWeight: 800,
+          textAlign: 'right'
+        }
+      },
+      {
+        id: 'costCompositionCount',
+        type: 'text',
+        z: 20,
+        right: 20,
+        bottom: 6,
+        style: {
+          text: `${number.format(compositionRows.length)} of ${number.format(compositionRows.length)} cost groups shown`,
+          fill: colorVar('--muted'),
+          fontSize: 11,
+          fontWeight: 800,
+          textAlign: 'right'
+        }
+      }
+    ]
   }, true);
+  chart.on('legendselectchanged', ({ selected }) => {
+    syncVisibleCompositionTotal(chart, selected);
+  });
+  syncVisibleCompositionTotal(chart, {});
 }
 
-function drawSpendWordCloud(rows) {
-  const words = spendCloudWords(rows);
-  if (!words.length) {
+function drawSpendLadder(rows) {
+  const items = spendLadderItems(rows);
+  if (!items.length) {
     drawEmptyChart(spendStrip, 'No SKU spend to show.');
     return;
   }
 
-  const total = rows.filter((row) => row.cost > 0).reduce((sum, row) => sum + row.cost, 0) || 1;
+  const total = items.reduce((sum, item) => sum + (item.cost || 0), 0) || 1;
+  const compact = (spendStrip.clientWidth || 0) < 860;
+  const axisWidth = compact ? 238 : 340;
+  const labels = items.map((item) => spendLadderAxisLabel(item, compact));
+  const services = uniqueSorted(items.map((item) => item.service || 'Mixed services'));
+  const serviceTotals = services.map((service) => ({
+    name: service,
+    value: items
+      .filter((item) => (item.service || 'Mixed services') === service)
+      .reduce((sum, item) => sum + (item.cost || 0), 0)
+  }));
 
-  chartFor(spendStrip).setOption({
+  const chart = chartFor(spendStrip);
+  chart.setOption({
     ...baseChartOption(),
     tooltip: {
       ...tooltipOption(),
       trigger: 'item',
-      formatter: ({ data, info }) => spendCloudTooltip(info || data, total)
+      formatter: ({ data }) => spendLadderTooltip(data?.info || data, total)
     },
+    legend: {
+      type: 'scroll',
+      top: 0,
+      right: 8,
+      selectedMode: 'multiple',
+      textStyle: { color: colorVar('--ink'), fontWeight: 800 }
+    },
+    grid: { left: axisWidth + 30, right: 118, top: services.length > 1 ? 38 : 18, bottom: 38 },
+    dataZoom: items.length > 10 ? [{ type: 'inside', yAxisIndex: 0 }] : [],
+    xAxis: valueAxis({ name: 'Cost', formatter: formatAxisCost }),
+    yAxis: categoryAxis(labels, {
+      inverse: true,
+      width: axisWidth,
+      overflow: 'break',
+      fontSize: compact ? 10 : 11,
+      lineHeight: compact ? 12 : 13
+    }),
     graphic: {
+      id: 'longTailLadderNote',
       type: 'text',
       right: 18,
-      bottom: 8,
+      bottom: 6,
       style: {
-        text: `Cost-weighted SKU cloud; ${number.format(words.length)} labels shown`,
+        text: `Ranked SKU spend ladder; ${number.format(items.length)} groups shown`,
         fill: colorVar('--muted'),
         font: '800 11px Inter, system-ui, sans-serif',
         textAlign: 'right'
       }
     },
-    series: [{
-      type: 'custom',
-      coordinateSystem: 'none',
-      data: [words],
-      renderItem: (params, api) => renderSpendCloudItem(params, api, words),
-      emphasis: { focus: 'self' }
-    }]
+    series: services.map((service) => {
+      const serviceColor = categorySeriesColor(service);
+      return {
+        name: service,
+        type: 'bar',
+        stack: 'skuSpend',
+        barMaxWidth: 18,
+        itemStyle: { color: serviceColor },
+        data: items.map((item) => {
+          if ((item.service || 'Mixed services') !== service) return null;
+          return {
+            value: item.cost,
+            info: item,
+            itemStyle: {
+              color: serviceColor,
+              borderRadius: [0, 999, 999, 0]
+            }
+          };
+        }),
+        label: {
+          show: true,
+          position: 'right',
+          formatter: ({ data }) => data?.info ? `${formatCost(data.info.cost)} · ${percent.format((data.info.cost || 0) / total)}` : '',
+          color: colorVar('--ink'),
+          fontWeight: 900,
+          fontSize: 11
+        },
+        emphasis: { focus: 'series' }
+      };
+    })
   }, true);
+  syncLegendPanelTotal(chart, 'strip', serviceTotals);
 }
 
-function spendCloudWords(rows) {
+function spendLadderAxisLabel(item, compact) {
+  const description = item.description || item.title || item.label || 'Unspecified description';
+  return wrapChartLabel(description, compact ? 26 : 38);
+}
+
+function spendLadderItems(rows) {
   const sorted = rows
     .filter((row) => (row.cost || 0) > 0)
     .slice()
     .sort((a, b) => b.cost - a.cost || b.usage - a.usage);
-  const limit = 30;
+  const limit = 10;
   const shown = sorted.slice(0, limit).map((row, index) => ({
     kind: 'sku',
-    label: spendCloudLabel(row),
-    title: row.group || spendCloudLabel(row),
+    label: spendLadderLabel(row),
+    title: row.group || spendLadderLabel(row),
     service: valueFromGroup(row, 'service') || 'Unspecified service',
-    sku: valueFromGroup(row, 'skuPartNumber') || valueFromGroup(row, 'skuName') || spendCloudLabel(row),
+    sku: valueFromGroup(row, 'skuPartNumber') || valueFromGroup(row, 'skuName') || spendLadderLabel(row),
     description: valueFromGroup(row, 'skuName') || row.group || 'Unspecified description',
     rawGroup: row.group || '',
     cost: row.cost || 0,
@@ -1165,7 +1529,7 @@ function spendCloudWords(rows) {
       kind: 'tail',
       label: 'Other SKUs',
       title: 'Other SKUs',
-      service: 'Mixed services',
+      service: 'Long tail',
       sku: 'Long tail',
       description: `${number.format(remaining.length)} smaller SKU groups`,
       rawGroup: 'Other SKUs',
@@ -1181,7 +1545,7 @@ function spendCloudWords(rows) {
   return shown;
 }
 
-function spendCloudLabel(row) {
+function spendLadderLabel(row) {
   const sku = valueFromGroup(row, 'skuPartNumber');
   if (sku) return sku;
   const name = valueFromGroup(row, 'skuName');
@@ -1189,150 +1553,7 @@ function spendCloudLabel(row) {
   return String(row.group || 'Unspecified SKU').split(' | ').filter(Boolean).pop() || 'Unspecified SKU';
 }
 
-function renderSpendCloudItem(params, api, words) {
-  const width = api.getWidth();
-  const height = api.getHeight();
-  const layout = layoutSpendCloudWords(words, width, height);
-  const children = [
-    {
-      type: 'rect',
-      shape: { x: 14, y: 12, width: Math.max(20, width - 28), height: Math.max(20, height - 44), r: 12 },
-      style: {
-        fill: colorWithAlpha(colorVar('--line'), 0.18),
-        stroke: colorWithAlpha(colorVar('--line'), 0.55),
-        lineWidth: 1
-      },
-      silent: true
-    }
-  ];
-
-  for (const item of layout) {
-    const fill = categorySeriesColor(item.colorKey, item.rank <= 8 ? 0.96 : 0.76);
-    const label = truncate(item.label, item.maxChars);
-    const isMajor = item.rank <= 8;
-    const fontWeight = isMajor ? 900 : 820;
-    children.push(
-      {
-        type: 'rect',
-        info: item,
-        invisible: true,
-        silent: false,
-        shape: {
-          x: item.x - 8,
-          y: item.y - item.boxHeight / 2,
-          width: item.boxWidth + 16,
-          height: item.boxHeight,
-          r: 8
-        },
-        style: { fill: 'rgba(0,0,0,0)' }
-      },
-      {
-        type: 'circle',
-        info: item,
-        shape: { cx: item.x - 11, cy: item.y + 1, r: Math.max(2.5, Math.min(5.5, item.fontSize / 7)) },
-        style: { fill, opacity: isMajor ? 0.95 : 0.68 }
-      },
-      {
-        type: 'text',
-        info: item,
-        style: {
-          x: item.x,
-          y: item.y,
-          text: label,
-          fill,
-          font: `${fontWeight} ${item.fontSize}px Inter, system-ui, sans-serif`,
-          textAlign: 'left',
-          textVerticalAlign: 'middle'
-        }
-      }
-    );
-  }
-
-  return { type: 'group', children: children.filter(Boolean) };
-}
-
-function layoutSpendCloudWords(words, width, height) {
-  const plot = {
-    left: 34,
-    top: 24,
-    right: Math.max(34, width - 34),
-    bottom: Math.max(46, height - 44)
-  };
-  const plotWidth = Math.max(120, plot.right - plot.left);
-  const plotHeight = Math.max(120, plot.bottom - plot.top);
-  const maxCost = Math.max(...words.map((word) => word.cost || 0), 1);
-  const minFont = width < 760 ? 11 : 12;
-  const maxFont = width < 760 ? 22 : 28;
-  const rowCount = Math.max(3, Math.min(6, Math.floor(plotHeight / 36)));
-  const rows = Array.from({ length: rowCount }, () => ({ width: 0, items: [] }));
-  const rowOrder = cloudRowOrder(rowCount);
-
-  for (const [index, word] of words.entries()) {
-    const weight = Math.pow((word.cost || 0) / maxCost, 0.42);
-    const fontSize = Math.round(minFont + weight * (maxFont - minFont));
-    const maxWidthShare = index < 4 ? 0.26 : index < 10 ? 0.2 : 0.16;
-    const maxChars = Math.max(8, Math.floor((plotWidth * maxWidthShare) / (fontSize * 0.6)));
-    const label = truncate(word.label, maxChars);
-    const boxWidth = Math.min(plotWidth - 18, Math.max(36, label.length * fontSize * 0.62 + 24));
-    const boxHeight = Math.max(20, fontSize * 1.35);
-    const item = {
-      ...word,
-      fontSize,
-      maxChars,
-      boxWidth,
-      boxHeight
-    };
-
-    const row = bestCloudRow(rows, rowOrder, boxWidth, plotWidth);
-    row.items.push(item);
-    row.width += boxWidth + cloudGapFor(item);
-  }
-
-  const positioned = [];
-  const rowHeight = plotHeight / rowCount;
-  for (const [rowIndex, row] of rows.entries()) {
-    if (!row.items.length) continue;
-    const contentWidth = row.items.reduce((sum, item, index) => sum + item.boxWidth + (index ? cloudGapFor(item) : 0), 0);
-    let x = plot.left + Math.max(0, (plotWidth - contentWidth) / 2);
-    const y = plot.top + rowHeight * (rowIndex + 0.5);
-    for (const item of row.items) {
-      const rect = {
-        x,
-        y: y - item.boxHeight / 2,
-        width: item.boxWidth,
-        height: item.boxHeight
-      };
-      positioned.push({ ...item, x: x + 13, y, rect });
-      x += item.boxWidth + cloudGapFor(item);
-    }
-  }
-
-  return positioned;
-}
-
-function cloudRowOrder(rowCount) {
-  const center = Math.floor((rowCount - 1) / 2);
-  const order = [center];
-  for (let offset = 1; order.length < rowCount; offset += 1) {
-    if (center - offset >= 0) order.push(center - offset);
-    if (center + offset < rowCount) order.push(center + offset);
-  }
-  return order;
-}
-
-function bestCloudRow(rows, rowOrder, boxWidth, plotWidth) {
-  const gap = 18;
-  const orderedRows = rowOrder.map((index) => rows[index]);
-  const fitting = orderedRows.filter((row) => row.width + boxWidth + gap <= plotWidth);
-  return (fitting.length ? fitting : orderedRows)
-    .sort((a, b) => a.width - b.width)[0];
-}
-
-function cloudGapFor(item) {
-  return item.rank <= 8 ? 22 : 16;
-}
-
-function spendCloudTooltip(item, total) {
+function spendLadderTooltip(item, total) {
   if (!item) return '';
   return tooltipLines(item.title || item.label || 'SKU', [
     ['Service', item.service || 'Mixed'],
@@ -1341,10 +1562,32 @@ function spendCloudTooltip(item, total) {
     ['Cost', formatCost(item.cost || 0)],
     ['Share', percent.format((item.cost || 0) / total)],
     ['Usage', number.format(item.usage || 0)],
-    ['Rows', number.format(item.count || 0)],
     ['Dominant region', item.region || 'Unspecified'],
     ['Rank', item.rank ? `#${number.format(item.rank)}` : 'n/a']
   ]);
+}
+
+function totalSkusForRegion(rows, regionName) {
+  if (!Array.isArray(rows) || !rows.length) return undefined;
+  const skus = new Set();
+  for (const row of rows || []) {
+    if ((row.region || 'Unspecified') !== regionName) continue;
+    const sku = skuKeyForRow(row);
+    if (sku) skus.add(sku);
+  }
+  return skus.size;
+}
+
+function skuKeyForRow(row) {
+  return valueFromGroup(row, 'skuPartNumber') ||
+    valueFromGroup(row, 'skuName') ||
+    skuNameForRow(row);
+}
+
+function waterfallAxisLabel(row) {
+  const service = valueFromGroup(row, 'service') || String(row.group || '').split(' | ')[0] || 'Service';
+  const sku = valueFromGroup(row, 'skuPartNumber') || 'SKU unavailable';
+  return `${service}\n${sku}`;
 }
 
 function drawServiceSkuDescriptionTree(rows) {
@@ -1408,8 +1651,13 @@ function drawRegionDrift(rows, query) {
     const key = `${row.month}@@${row.region}`;
     lookup.set(key, (lookup.get(key) || 0) + row.cost);
   }
+  const regionChartTotals = regionTotals.map((region) => ({
+    name: region,
+    value: months.reduce((sum, month) => sum + (lookup.get(`${month}@@${region}`) || 0), 0)
+  }));
 
-  chartFor(driftChart).setOption({
+  const chart = chartFor(driftChart);
+  chart.setOption({
     ...baseChartOption(),
     tooltip: {
       ...tooltipOption(),
@@ -1435,6 +1683,7 @@ function drawRegionDrift(rows, query) {
       itemStyle: { color: regionSeriesColor(region) }
     }))
   }, true);
+  syncLegendPanelTotal(chart, 'drift', regionChartTotals);
 }
 
 function drawDailyCostExplorer(rows, query) {
@@ -1471,7 +1720,8 @@ function drawDailyTimelineExplorer(series, stats) {
   const labels = series.map((row) => formatMonthDay(row.day));
   const xAxis = dailyCategoryAxis(labels, series.length);
 
-  chartFor(dailyHeatMap).setOption({
+  const chart = chartFor(dailyHeatMap);
+  chart.setOption({
     ...baseChartOption(),
     graphic: dailyExplorerGraphic('Timeline', stats),
     tooltip: {
@@ -1496,10 +1746,11 @@ function drawDailyTimelineExplorer(series, stats) {
         name: 'Daily cost',
         type: 'bar',
         barMaxWidth: 22,
-        data: series.map((row, index) => ({
+        itemStyle: { color: colorVar('--brand') },
+        data: series.map((row) => ({
           value: row.cost,
           itemStyle: {
-            color: paletteColor(index, 0.88),
+            color: colorVar('--brand'),
             borderRadius: row.cost >= 0 ? [5, 5, 0, 0] : [0, 0, 5, 5]
           }
         })),
@@ -1519,9 +1770,9 @@ function drawDailyTimelineExplorer(series, stats) {
         smooth: true,
         symbol: 'circle',
         symbolSize: 6,
-        lineStyle: { width: 3, color: colorVar('--brand') },
-        itemStyle: { color: colorVar('--brand') },
-        areaStyle: { color: colorWithAlpha(colorVar('--brand'), 0.1) },
+        lineStyle: { width: 3, color: paletteColor(1) },
+        itemStyle: { color: paletteColor(1) },
+        areaStyle: { color: colorWithAlpha(paletteColor(1), 0.1) },
         data: series.map((row) => row.rollingAverage),
         markLine: {
           symbol: 'none',
@@ -1536,12 +1787,17 @@ function drawDailyTimelineExplorer(series, stats) {
       }
     ]
   }, true);
+  syncLegendPanelTotal(chart, 'dailyHeat', [
+    { name: 'Daily cost', value: stats.total },
+    { name: '7-day average', value: 0 }
+  ]);
 }
 
 function drawDailySpikeExplorer(series, stats) {
   const labels = series.map((row) => formatMonthDay(row.day));
 
-  chartFor(dailyHeatMap).setOption({
+  const chart = chartFor(dailyHeatMap);
+  chart.setOption({
     ...baseChartOption(),
     graphic: dailyExplorerGraphic('Spikes', stats, dailySpikeDetail(stats)),
     tooltip: {
@@ -1596,6 +1852,11 @@ function drawDailySpikeExplorer(series, stats) {
       }
     ]
   }, true);
+  syncLegendPanelTotal(chart, 'dailyHeat', [
+    { name: 'Increase', value: 0 },
+    { name: 'Decrease', value: 0 },
+    { name: 'Daily cost', value: stats.total }
+  ]);
 }
 
 function drawDailyCalendarExplorer(series, stats) {
@@ -1604,7 +1865,9 @@ function drawDailyCalendarExplorer(series, stats) {
   const maxCost = Math.max(1, ...values);
   const compactCalendar = (dailyHeatMap.clientWidth || 0) < 760;
 
-  chartFor(dailyHeatMap).setOption({
+  const chart = chartFor(dailyHeatMap);
+  chart.off('legendselectchanged');
+  chart.setOption({
     ...baseChartOption(),
     graphic: dailyExplorerGraphic('Calendar', stats),
     tooltip: {
@@ -1697,7 +1960,9 @@ function drawDailyRankingExplorer(series, stats) {
     .sort((a, b) => Math.abs(b.cost) - Math.abs(a.cost) || a.day.localeCompare(b.day));
   const labels = ranked.map((row, index) => `${index + 1}. ${formatMonthDay(row.day)}`);
 
-  chartFor(dailyHeatMap).setOption({
+  const chart = chartFor(dailyHeatMap);
+  chart.off('legendselectchanged');
+  chart.setOption({
     ...baseChartOption(),
     graphic: dailyExplorerGraphic('Ranking', stats),
     tooltip: {
@@ -1757,9 +2022,13 @@ function drawDailyPulseExplorer(series, stats) {
     axisTick: { show: false }
   };
 
-  chartFor(dailyHeatMap).setOption({
+  const chart = chartFor(dailyHeatMap);
+  chart.setOption({
     ...baseChartOption(),
-    graphic: dailyExplorerGraphic('Pulse', stats),
+    graphic: [
+      ...dailyExplorerGraphic('Pulse', stats),
+      dailyPulseCostLegendGraphic(maxCost)
+    ],
     tooltip: {
       ...tooltipOption(),
       trigger: 'item',
@@ -1776,22 +2045,111 @@ function drawDailyPulseExplorer(series, stats) {
     radiusAxis: {
       min: 0,
       max: maxCost,
-      splitLine: { lineStyle: { color: colorVar('--line') } },
-      axisLine: { lineStyle: { color: colorVar('--line') } },
-      axisLabel: { color: colorVar('--muted'), formatter: formatAxisCost }
+      splitLine: { lineStyle: { color: colorWithAlpha(colorVar('--line'), 0.82) } },
+      splitArea: {
+        show: true,
+        areaStyle: {
+          color: [
+            colorWithAlpha(colorVar('--brand'), 0.045),
+            colorWithAlpha(colorVar('--accent'), 0.035)
+          ]
+        }
+      },
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: {
+        show: false
+      }
     },
     series: [{
       name: 'Daily cost',
       type: 'bar',
       coordinateSystem: 'polar',
+      z: 2,
       roundCap: true,
       barWidth: '58%',
-      data: series.map((row, index) => ({
+      showBackground: true,
+      backgroundStyle: {
+        color: colorWithAlpha(colorVar('--brand'), 0.08),
+        borderRadius: 999
+      },
+      itemStyle: { color: colorVar('--brand') },
+      data: series.map((row) => ({
         value: Math.max(row.cost, 0),
-        itemStyle: { color: paletteColor(index, 0.9) }
+        itemStyle: { color: colorVar('--brand') }
       }))
     }]
   }, true);
+  syncLegendPanelTotal(chart, 'dailyHeat', [{ name: 'Daily cost', value: stats.total }]);
+}
+
+function dailyPulseCostLegendGraphic(maxCost) {
+  const compact = (dailyHeatMap.clientWidth || 0) < 760;
+  const ticks = [1, 0.75, 0.5, 0.25, 0].map((ratio) => Math.max(0, maxCost * ratio));
+  const width = compact ? 112 : 126;
+  const rowHeight = 18;
+  const top = compact ? 62 : 68;
+  const right = compact ? 12 : 24;
+  const height = 24 + ticks.length * rowHeight;
+
+  return {
+    id: 'dailyPulseCostScale',
+    type: 'group',
+    right,
+    top,
+    z: 20,
+    children: [
+      {
+        type: 'rect',
+        shape: { x: 0, y: 0, width, height, r: 8 },
+        style: {
+          fill: colorWithAlpha(colorVar('--panel'), 0.84),
+          stroke: colorWithAlpha(colorVar('--line'), 0.9),
+          lineWidth: 1,
+          shadowBlur: 10,
+          shadowColor: colorWithAlpha(colorVar('--shadow'), 0.16)
+        }
+      },
+      {
+        type: 'text',
+        style: {
+          x: 10,
+          y: 8,
+          text: 'Cost scale',
+          fill: colorVar('--muted'),
+          font: '900 10px Inter, system-ui, sans-serif',
+          textAlign: 'left',
+          textVerticalAlign: 'top'
+        }
+      },
+      ...ticks.map((value, index) => ({
+        type: 'group',
+        x: 10,
+        y: 27 + index * rowHeight,
+        children: [
+          {
+            type: 'rect',
+            shape: { x: 0, y: 4, width: 24, height: 7, r: 4 },
+            style: {
+              fill: colorWithAlpha(colorVar('--brand'), 0.16 + (ticks.length - index - 1) * 0.11)
+            }
+          },
+          {
+            type: 'text',
+            style: {
+              x: 32,
+              y: 0,
+              text: formatAxisCost(value),
+              fill: colorVar('--ink'),
+              font: '900 11px Inter, system-ui, sans-serif',
+              textAlign: 'left',
+              textVerticalAlign: 'top'
+            }
+          }
+        ]
+      }))
+    ]
+  };
 }
 
 function syncDailyModeButtons() {
@@ -1977,6 +2335,12 @@ function renderGroupByOptions(defaultGroupBy) {
   const selected = new Set(String(defaultGroupBy || 'service').split(',').map((item) => item.trim()).filter(Boolean));
   groupOptions.innerHTML = '';
 
+  const actions = document.createElement('div');
+  actions.className = 'group-actions';
+  actions.innerHTML = '<button type="button" id="groupByReset">Reset</button>';
+  actions.querySelector('button').addEventListener('click', resetGroupBySelection);
+  groupOptions.appendChild(actions);
+
   for (const option of groupByOptions) {
     const id = `groupBy-${option.value}`;
     const label = document.createElement('label');
@@ -1994,6 +2358,15 @@ function renderGroupByOptions(defaultGroupBy) {
   syncGroupBySelection();
 }
 
+function resetGroupBySelection(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  for (const checkbox of groupOptions.querySelectorAll('input[type="checkbox"]')) {
+    checkbox.checked = false;
+  }
+  syncGroupBySelection();
+}
+
 function syncGroupBySelection(event) {
   const selected = Array.from(groupOptions.querySelectorAll('input:checked')).map((input) => input.value);
   if (!selected.length && event?.target) {
@@ -2005,7 +2378,9 @@ function syncGroupBySelection(event) {
   const labels = groupByOptions
     .filter((option) => selected.includes(option.value))
     .map((option) => option.label);
-  groupSummary.textContent = labels.length <= 2 ? labels.join(', ') : `${labels.length} fields selected`;
+  groupSummary.textContent = labels.length
+    ? labels.length <= 2 ? labels.join(', ') : `${labels.length} fields selected`
+    : 'None selected';
 }
 
 function renderTableFilters(report) {
@@ -2183,13 +2558,36 @@ function renderRegionLegend(rows) {
     .sort((a, b) => Math.abs(b.cost) - Math.abs(a.cost));
 
   regionLegendSection.hidden = !regions.length;
-  regionLegend.innerHTML = regions.map((row) => `
-    <span class="legend-chip" title="${escapeHtml(`${row.key}: ${formatCost(row.cost)}`)}">
-      <span class="legend-swatch" style="--legend-color: ${escapeHtml(regionSeriesColor(row.key))}"></span>
-      <span>${escapeHtml(row.key)}</span>
-      <strong>${formatCost(row.cost)}</strong>
-    </span>
-  `).join('');
+  if (!regions.length) {
+    regionLegend.innerHTML = '';
+    return;
+  }
+
+  const totalMagnitude = regions.reduce((sum, row) => sum + Math.abs(row.cost || 0), 0) || 1;
+  regionLegend.innerHTML = `
+    <table class="region-legend-table">
+      <thead>
+        <tr>
+          <th scope="col">Color</th>
+          <th scope="col">Region</th>
+          <th scope="col">Net cost</th>
+          <th scope="col">Share</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${regions.map((row) => `
+          <tr style="--legend-color: ${escapeHtml(regionSeriesColor(row.key))}" title="${escapeHtml(`${row.key}: ${formatCost(row.cost)}`)}">
+            <td>
+              <span class="legend-swatch" aria-hidden="true"></span>
+            </td>
+            <td class="legend-region-name">${escapeHtml(row.key)}</td>
+            <td class="legend-number">${formatCost(row.cost)}</td>
+            <td class="legend-number">${percent.format(Math.abs(row.cost || 0) / totalMagnitude)}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
 }
 
 async function downloadExcel() {
@@ -2251,6 +2649,9 @@ function chartFor(element) {
 
 function drawEmptyChart(element, message) {
   const chart = chartFor(element);
+  chart.off('legendselectchanged');
+  chart.off('click');
+  chart.getZr().off('click');
   chart.setOption({
     ...baseChartOption(),
     title: {
@@ -2278,12 +2679,42 @@ function baseChartOption() {
 
 function tooltipOption() {
   return {
+    appendToBody: true,
+    confine: false,
+    position: tooltipPosition,
     borderWidth: 1,
     borderColor: colorVar('--line'),
     backgroundColor: colorVar('--panel'),
     textStyle: { color: colorVar('--ink') },
-    extraCssText: `box-shadow:0 14px 32px ${colorVar('--shadow')};border-radius:8px;`
+    extraCssText: `z-index:9999;pointer-events:none;box-shadow:0 14px 32px ${colorVar('--shadow')};border-radius:8px;`
   };
+}
+
+function tooltipPosition(point, _params, _dom, _rect, size) {
+  const margin = 12;
+  const gap = 16;
+  const contentWidth = size.contentSize?.[0] || 240;
+  const contentHeight = size.contentSize?.[1] || 120;
+  const viewWidth = size.viewSize?.[0] || window.innerWidth;
+  const viewHeight = size.viewSize?.[1] || window.innerHeight;
+  let x = point[0] + gap;
+  let y = point[1] + gap;
+
+  if (x + contentWidth + margin > viewWidth) {
+    x = point[0] - contentWidth - gap;
+  }
+  if (y + contentHeight + margin > viewHeight) {
+    y = point[1] - contentHeight - gap;
+  }
+
+  return [
+    clampNumber(x, margin, Math.max(margin, viewWidth - contentWidth - margin)),
+    clampNumber(y, margin, Math.max(margin, viewHeight - contentHeight - margin))
+  ];
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function categoryAxis(data, options = {}) {
@@ -2296,8 +2727,10 @@ function categoryAxis(data, options = {}) {
     axisLabel: {
       color: colorVar('--ink'),
       width: options.width,
-      overflow: options.width ? 'truncate' : undefined,
-      rotate: options.axisLabelRotate || 0
+      overflow: options.overflow || (options.width ? 'truncate' : undefined),
+      rotate: options.axisLabelRotate || 0,
+      fontSize: options.fontSize,
+      lineHeight: options.lineHeight
     }
   };
 }
@@ -2530,15 +2963,19 @@ function serviceSkuCards(tree) {
       region: dominantRegion(remaining),
       colorKey: 'Other services',
       baseColor: categorySeriesColor('Other services'),
+      descriptions: descriptionsForTreeNodes(remaining),
+      descriptionDetails: skuDescriptionDetailsForTreeNodes(remaining),
       lines: remaining.slice(0, 4).map((node) => ({
-      kind: 'service-line',
-      service: node.name,
-      sku: 'Mixed',
-      description: `${node.children?.length || 0} SKU groups`,
-      label: skuDescriptionLabel(node.name, `${node.children?.length || 0} SKU groups`),
-      rawCost: node.rawCost,
-      usage: node.usage,
-      count: node.count,
+        kind: 'service-line',
+        service: node.name,
+        sku: 'Mixed',
+        description: `${node.children?.length || 0} SKU groups`,
+        descriptions: descriptionsForTreeNode(node),
+        descriptionDetails: skuDescriptionDetailsForTreeNode(node),
+        label: skuDescriptionLabel(node.name, `${node.children?.length || 0} SKU groups`),
+        rawCost: node.rawCost,
+        usage: node.usage,
+        count: node.count,
         region: node.region,
         colorKey: node.name
       }))
@@ -2553,11 +2990,15 @@ function serviceSkuCardForService(service) {
   const lines = skus.slice(0, skuLimit).map((sku) => serviceSkuCardLine(service, sku));
   const remaining = skus.slice(skuLimit);
   if (remaining.length) {
+    const remainingDescriptions = descriptionsForTreeNodes(remaining);
+    const remainingDescriptionDetails = skuDescriptionDetailsForTreeNodes(remaining);
     lines.push({
       kind: 'sku',
       service: service.name,
       sku: 'Other',
       description: `${remaining.length} ${service.name} SKUs`,
+      descriptions: remainingDescriptions,
+      descriptionDetails: remainingDescriptionDetails,
       label: skuDescriptionLabel('Other', `${remaining.length} ${service.name} SKUs`),
       rawCost: remaining.reduce((sum, node) => sum + (node.rawCost || 0), 0),
       usage: remaining.reduce((sum, node) => sum + (node.usage || 0), 0),
@@ -2576,19 +3017,25 @@ function serviceSkuCardForService(service) {
     region: service.region,
     colorKey: service.name,
     baseColor: categorySeriesColor(service.name),
+    descriptions: descriptionsForTreeNode(service),
+    descriptionDetails: skuDescriptionDetailsForTreeNode(service),
     lines
   };
 }
 
 function serviceSkuCardLine(service, sku) {
-  const description = sku.children?.length === 1
-    ? sku.children[0].name
-    : `${sku.children?.length || 0} descriptions`;
+  const descriptions = descriptionsForTreeNode(sku);
+  const descriptionDetails = skuDescriptionDetailsForTreeNode(sku);
+  const description = descriptions.length === 1
+    ? descriptions[0]
+    : `${descriptions.length || 0} descriptions`;
   return {
     kind: 'sku',
     service: service.name,
     sku: sku.name,
     description,
+    descriptions,
+    descriptionDetails,
     label: skuDescriptionLabel(sku.name, description),
     rawCost: sku.rawCost,
     usage: sku.usage,
@@ -2596,6 +3043,40 @@ function serviceSkuCardLine(service, sku) {
     region: sku.region,
     colorKey: `${service.name} ${sku.name}`
   };
+}
+
+function descriptionsForTreeNodes(nodes) {
+  return uniqueSorted((nodes || []).flatMap((node) => descriptionsForTreeNode(node)));
+}
+
+function descriptionsForTreeNode(node) {
+  const descriptions = [];
+  if (node?.description && node.description !== 'Unspecified description') {
+    descriptions.push(node.description);
+  }
+  for (const child of node?.children || []) {
+    descriptions.push(...descriptionsForTreeNode(child));
+  }
+  return uniqueSorted(descriptions);
+}
+
+function skuDescriptionDetailsForTreeNodes(nodes) {
+  return uniqueSorted((nodes || []).flatMap((node) => skuDescriptionDetailsForTreeNode(node)));
+}
+
+function skuDescriptionDetailsForTreeNode(node, activeSku = '') {
+  const details = [];
+  const children = node?.children || [];
+  const nextSku = children.length
+    ? (node?.sku || activeSku)
+    : activeSku;
+  if (node?.description && node.description !== 'Unspecified description') {
+    details.push(skuDescriptionLabel(nextSku || node.sku || node.name, node.description));
+  }
+  for (const child of children) {
+    details.push(...skuDescriptionDetailsForTreeNode(child, nextSku));
+  }
+  return uniqueSorted(details);
 }
 
 function skuDescriptionLabel(sku, description) {
@@ -2770,27 +3251,37 @@ function renderServiceSkuCardItem(params, api, cards, maxCost) {
 
 function serviceSkuCardTooltip(item, total) {
   if (!item) return '';
+  const descriptions = uniqueSorted(item.descriptions || []);
+  const descriptionDetails = uniqueSorted(item.descriptionDetails || []);
+  const tooltipDescriptions = descriptionDetails.length ? descriptionDetails : descriptions;
   if (item.kind === 'service') {
-    return tooltipLines(item.name, [
+    const rows = [
       ['Service total', formatCost(item.rawCost || 0)],
       ['Share', percent.format((item.rawCost || 0) / total)],
       ['Usage', number.format(item.usage || 0)],
       ['Rows', number.format(item.count || 0)],
       ['Dominant region', item.region || 'Unspecified'],
-      ['Visible detail', `${number.format(item.lines?.length || 0)} rows`]
-    ]);
+      ['Visible detail', `${number.format(item.lines?.length || 0)} rows`],
+      ['SKU descriptions', tooltipDescriptions.length ? number.format(tooltipDescriptions.length) : 'None']
+    ];
+    return tooltipDescriptions.length > 1
+      ? tooltipLinesWithList(item.name, rows, 'All SKU descriptions', tooltipDescriptions)
+      : tooltipLines(item.name, rows);
   }
 
   const skuLabel = item.label || skuDescriptionLabel(item.sku, item.description);
-  return tooltipLines(`${item.service || 'Service'} / ${skuLabel}`, [
+  const rows = [
     ['SKU', item.sku || 'Mixed'],
-    ['SKU description', item.description || 'Mixed'],
+    ['SKU description', tooltipDescriptions.length > 1 ? `${number.format(tooltipDescriptions.length)} descriptions` : tooltipDescriptions[0] || item.description || 'Mixed'],
     ['Cost', formatCost(item.rawCost || 0)],
     ['Share', percent.format((item.rawCost || 0) / total)],
     ['Usage', number.format(item.usage || 0)],
     ['Rows', number.format(item.count || 0)],
     ['Dominant region', item.region || 'Unspecified']
-  ]);
+  ];
+  return tooltipDescriptions.length > 1
+    ? tooltipLinesWithList(`${item.service || 'Service'} / ${skuLabel}`, rows, 'All SKU descriptions', tooltipDescriptions)
+    : tooltipLines(`${item.service || 'Service'} / ${skuLabel}`, rows);
 }
 
 function valueFromGroup(row, key) {
@@ -2831,6 +3322,23 @@ function setChartTotal(key, value) {
   element.textContent = `Total ${formatCost(value || 0)}`;
 }
 
+function syncLegendPanelTotal(chart, key, totalsByName, options = {}) {
+  chart.off('legendselectchanged');
+  const normalized = (totalsByName || []).map((item) => ({
+    name: item.name,
+    value: Number(item.value) || 0
+  }));
+  const update = (selected = {}) => {
+    const visibleTotal = normalized.reduce((sum, item) => (
+      selected[item.name] === false ? sum : sum + item.value
+    ), 0);
+    setChartTotal(key, visibleTotal);
+    options.onUpdate?.(visibleTotal, selected);
+  };
+  chart.on('legendselectchanged', ({ selected }) => update(selected || {}));
+  update({});
+}
+
 function topRows(rows, limit) {
   return rows
     .filter((row) => (row.cost || 0) > 0)
@@ -2852,7 +3360,7 @@ function selectChartMetric(report, rows = report.byGroup || []) {
     return {
       value: (row) => row.cost || 0,
       format: (value) => formatCost(value),
-      note: 'Top grouped usage by net cost. Colors highlight the grouped categories.'
+      note: 'Top grouped usage by net cost. Colors highlight regions; use the legend to hide or show regional bars.'
     };
   }
 
@@ -2860,7 +3368,7 @@ function selectChartMetric(report, rows = report.byGroup || []) {
     return {
       value: (row) => row.usage || 0,
       format: (value) => number.format(value),
-      note: 'Cost is zero for this query, so the chart is using usage quantity. Colors highlight the grouped categories.'
+      note: 'Cost is zero for this query, so the chart is using usage quantity. Colors highlight regions.'
     };
   }
 
@@ -2905,9 +3413,52 @@ function applyTheme(theme, rerender) {
   if (currentInsights) renderInsights(currentInsights);
 }
 
-function setScanState(state, label) {
+function setScanState(state, label, detail = '') {
   scanStatus.textContent = label;
   scanStatus.dataset.state = state;
+  if (!scanDetail) return;
+  scanDetail.textContent = detail;
+  scanDetail.hidden = !detail;
+  scanDetail.dataset.state = state;
+  scanDetail.title = detail
+    ? 'Rows fetched sums OCI rows returned by the table query and chart queries. Chart queries use different groupings.'
+    : '';
+}
+
+function scanCompletionDetail(report, insights, elapsedMs, error) {
+  const insightNames = ['service', 'sku', 'compartment', 'drift', 'daily'];
+  const loadedInsights = insightNames.filter((name) => insights?.[name]);
+  const failedInsights = Object.keys(insights?.errors || {}).length + (error ? 1 : 0);
+  const reports = [report, ...loadedInsights.map((name) => insights[name])].filter(Boolean);
+  const fetchedRows = reports.reduce((sum, item) => sum + (item.totals?.rowCount || 0), 0);
+  const primaryGroups = report?.byGroup?.length || 0;
+  const queryCount = 1 + loadedInsights.length + failedInsights;
+  const parts = [
+    `${formatDuration(elapsedMs)} elapsed`,
+    `${number.format(fetchedRows)} rows fetched`,
+    `${number.format(primaryGroups)} grouped rows`,
+    `${number.format(queryCount)} usage queries`
+  ];
+
+  if (failedInsights) {
+    parts.push(`${number.format(failedInsights)} chart ${failedInsights === 1 ? 'error' : 'errors'}`);
+  } else {
+    parts.push(`${number.format(loadedInsights.length)} chart datasets`);
+  }
+
+  return parts.join(' · ');
+}
+
+function formatDuration(ms) {
+  const value = Math.max(0, Number(ms) || 0);
+  if (value < 1000) return `${number.format(Math.round(value))} ms`;
+  if (value < 60000) {
+    const seconds = value / 1000;
+    return `${seconds < 10 ? seconds.toFixed(1) : number.format(Math.round(seconds))} sec`;
+  }
+  const minutes = Math.floor(value / 60000);
+  const seconds = Math.round((value % 60000) / 1000);
+  return `${number.format(minutes)} min ${number.format(seconds)} sec`;
 }
 
 function updateFooterWindow(start, end) {
@@ -3184,6 +3735,16 @@ function tooltipLines(title, rows) {
     <strong>${escapeHtml(title)}</strong>
     <div class="chart-tooltip">
       ${rows.map(([label, value]) => `<span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b>`).join('')}
+    </div>
+  `;
+}
+
+function tooltipLinesWithList(title, rows, listTitle, items) {
+  return `
+    ${tooltipLines(title, rows)}
+    <div class="chart-tooltip-list">
+      <span>${escapeHtml(listTitle)}</span>
+      <ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
     </div>
   `;
 }

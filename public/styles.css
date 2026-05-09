@@ -196,6 +196,36 @@ summary {
   background: #8b3a3a;
 }
 
+.scan-detail {
+  align-self: flex-end;
+  max-width: min(620px, 44vw);
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8eef6;
+  font-size: 0.78rem;
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.scan-detail[hidden] {
+  display: none;
+}
+
+.scan-detail[data-state="complete"] {
+  background: rgba(47, 143, 100, 0.2);
+  border-color: rgba(118, 210, 163, 0.34);
+}
+
+.scan-detail[data-state="error"] {
+  background: rgba(139, 58, 58, 0.22);
+  border-color: rgba(255, 180, 180, 0.32);
+}
+
 .theme-field {
   min-width: 142px;
   color: #d7dee8;
@@ -409,6 +439,30 @@ select {
   box-shadow: 0 18px 36px var(--shadow);
 }
 
+.group-actions {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.group-actions button {
+  min-height: 30px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--panel), var(--paper) 34%);
+  color: var(--ink);
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.group-actions button:hover,
+.group-actions button:focus-visible {
+  border-color: color-mix(in srgb, var(--brand), var(--line) 35%);
+  background: color-mix(in srgb, var(--brand), var(--panel) 88%);
+}
+
 .group-option,
 .filter-option {
   display: grid;
@@ -611,9 +665,7 @@ select {
 }
 
 .region-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  overflow-x: auto;
 }
 
 .legend-chip {
@@ -644,6 +696,88 @@ select {
   color: var(--muted);
   font-size: 0.76rem;
   font-weight: 800;
+}
+
+.region-legend-table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: separate;
+  border-spacing: 0;
+  color: var(--ink);
+  font-size: 0.84rem;
+}
+
+.region-legend-table th,
+.region-legend-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line), transparent 30%);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.region-legend-table th {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: color-mix(in srgb, var(--paper), var(--panel) 48%);
+}
+
+.region-legend-table th:first-child {
+  border-top-left-radius: 7px;
+}
+
+.region-legend-table th:last-child {
+  border-top-right-radius: 7px;
+}
+
+.region-legend-table tbody tr {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--legend-color), var(--panel) 86%) 0%,
+    color-mix(in srgb, var(--legend-color), var(--panel) 94%) 22%,
+    var(--panel) 72%
+  );
+  box-shadow: inset 5px 0 0 var(--legend-color);
+}
+
+.region-legend-table tbody tr:hover {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--legend-color), var(--panel) 76%) 0%,
+    color-mix(in srgb, var(--legend-color), var(--panel) 90%) 32%,
+    color-mix(in srgb, var(--brand), var(--panel) 94%) 100%
+  );
+}
+
+.region-legend-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.region-legend-table td:first-child,
+.region-legend-table th:first-child {
+  width: 96px;
+}
+
+.region-legend-table .legend-swatch {
+  width: 54px;
+  height: 14px;
+  border: 1px solid color-mix(in srgb, var(--legend-color), #000 18%);
+  border-radius: 999px;
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--legend-color), transparent 78%),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42);
+}
+
+.legend-region-name {
+  font-weight: 900;
+}
+
+.legend-number {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 850;
 }
 
 .chart-section {
@@ -901,11 +1035,6 @@ select {
   min-height: 260px;
 }
 
-.cost-composition-card .mini-chart {
-  height: 340px;
-  min-height: 340px;
-}
-
 .matrix-chart {
   height: 420px;
   min-height: 420px;
@@ -917,8 +1046,8 @@ select {
 }
 
 .cloud-chart {
-  height: 280px;
-  min-height: 280px;
+  height: 360px;
+  min-height: 360px;
 }
 
 .service-sku-chart {
@@ -950,6 +1079,36 @@ select {
 .chart-tooltip b {
   color: var(--ink);
   text-align: right;
+}
+
+.chart-tooltip-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  max-width: min(520px, 72vw);
+}
+
+.chart-tooltip-list span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.chart-tooltip-list ul {
+  display: grid;
+  gap: 4px;
+  max-height: 220px;
+  margin: 0;
+  padding-left: 18px;
+  overflow: auto;
+}
+
+.chart-tooltip-list li {
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.25;
 }
 
 .heat-grid {
@@ -1420,6 +1579,11 @@ tfoot td {
 
   .top-actions {
     justify-content: flex-start;
+    width: 100%;
+  }
+
+  .scan-detail {
+    max-width: 100%;
   }
 
   .controls {

@@ -16,6 +16,7 @@
     </div>
     <div class="top-actions">
       <span class="scan-status" id="scanStatus">Ready</span>
+      <span class="scan-detail" id="scanDetail" hidden></span>
       <label class="theme-field">
         Theme
         <select id="themeSelector">
@@ -27,7 +28,7 @@
         </select>
       </label>
       <a class="download" id="csvLink" href="/api/usage.csv">CSV</a>
-      <button class="download" type="button" id="excelDownload">Excel</button>
+      <button class="download" type="button" id="excelDownload" disabled>Excel</button>
     </div>
   </header>
 
@@ -148,7 +149,7 @@
     <section class="insights-section">
       <div class="table-head">
         <h2>Cost Analytics</h2>
-        <span id="insightStatus">Loading charts</span>
+        <span id="insightStatus">Not scanned</span>
       </div>
       <div class="insight-grid">
         <article class="insight-card">
@@ -193,7 +194,7 @@
         </article>
         <article class="insight-card">
           <div class="chart-panel-head">
-            <h3 class="chart-title" tabindex="0" data-tooltip="Plots usage quantity against cost. Point color identifies the SKU group, and points far above the pack are expensive for their usage volume.">Unit Economics Scatterplot</h3>
+            <h3 class="chart-title" tabindex="0" data-tooltip="Plots usage quantity against cost. To reduce clutter, high-cost, high-usage, and high unit-cost SKUs remain visible while smaller low-signal SKUs are combined into the Long tail marker; hover it to see how many SKU groups it represents.">Unit Economics Scatterplot</h3>
             <div class="chart-panel-actions">
               <span class="chart-total" id="scatterTotal">Total $0.00</span>
               <button class="chart-download" type="button" data-chart="scatter" aria-label="Download unit economics scatterplot as PNG">PNG</button>
@@ -211,7 +212,7 @@
           </div>
           <div class="echart mini-chart" id="paretoChart"></div>
         </article>
-        <article class="insight-card wide-card cost-composition-card">
+        <article class="insight-card cost-composition-card">
           <div class="chart-panel-head">
             <h3 class="chart-title" tabindex="0" data-tooltip="Breaks net positive cost into service shares. Segment color identifies the service, and the tooltip still shows its dominant region.">Cost Composition</h3>
             <div class="chart-panel-actions">
@@ -223,17 +224,17 @@
         </article>
         <article class="insight-card wide-card">
           <div class="chart-panel-head">
-            <h3 class="chart-title" tabindex="0" data-tooltip="Sizes SKU labels by net cost so dominant and long-tail charges can be explored quickly. Hover any label for cost, share, usage, rows, and dominant region.">Long-Tail Cost Word Cloud</h3>
+            <h3 class="chart-title" tabindex="0" data-tooltip="Ranks top SKU costs as a spend ladder and groups the smallest items into the long tail. Use the service legend to hide or show groups and update the visible total.">Long-Tail SKU Spend Ladder</h3>
             <div class="chart-panel-actions">
               <span class="chart-total" id="stripTotal">Total $0.00</span>
-              <button class="chart-download" type="button" data-chart="strip" aria-label="Download long-tail cost word cloud as PNG">PNG</button>
+              <button class="chart-download" type="button" data-chart="strip" aria-label="Download long-tail SKU spend ladder as PNG">PNG</button>
             </div>
           </div>
           <div class="echart cloud-chart" id="spendStrip"></div>
         </article>
         <article class="insight-card wide-card">
           <div class="chart-panel-head">
-            <h3 class="chart-title" tabindex="0" data-tooltip="Shows top OCI services as cards with nested top SKUs and grouped Other rows. SKU rows include the part number and SKU description; hover a row for full description, cost, usage, share, row count, and dominant region.">Service Cards With Nested Top SKUs</h3>
+            <h3 class="chart-title" tabindex="0" data-tooltip="Shows top OCI services as cards with nested top SKUs and grouped Other rows. SKU rows include part number and description; hover a row to see cost, usage, region, and every SKU-description pair represented by that group.">Service Cards With Nested Top SKUs</h3>
             <div class="chart-panel-actions">
               <span class="chart-total" id="serviceSkuTotal">Total $0.00</span>
               <button class="chart-download" type="button" data-chart="serviceSku" aria-label="Download service cards with nested top SKUs chart as PNG">PNG</button>
@@ -275,7 +276,7 @@
       <div class="table-head">
         <h2>Grouped Usage</h2>
         <div class="table-head-actions">
-          <span id="statusText">Loading</span>
+          <span id="statusText">Ready to scan</span>
           <button type="button" id="resetFilters">Reset</button>
         </div>
       </div>
