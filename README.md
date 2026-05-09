@@ -9,8 +9,8 @@ The app uses the local OCI CLI `DEFAULT` profile by default, reads cost data fro
 ## Quick Start
 
 ```bash
-git clone https://github.com/nafey1/OCI-Cost-Analysis.git
-cd OCI-Cost-Analysis
+git clone https://github.com/nafey1/oci-cost-analysis.git
+cd oci-cost-analysis
 cp .env.example .env
 npm install
 npm start
@@ -212,7 +212,7 @@ If the dashboard Start date is changed to a date later than End, the End date is
 ## Local Run
 
 ```bash
-cd OCI-Cost-Analysis
+cd oci-cost-analysis
 cp .env.example .env
 npm install
 npm start
