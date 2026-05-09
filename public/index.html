@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OCI Usage</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-block">
+      <img class="oci-logo" src="/oci-logo.svg" alt="Oracle Cloud Infrastructure logo">
+      <p class="eyebrow">Oracle Cloud Infrastructure</p>
+      <h1>Cost and Usage</h1>
+    </div>
+    <div class="top-actions">
+      <span class="scan-status" id="scanStatus">Ready</span>
+      <label class="theme-field">
+        Theme
+        <select id="themeSelector">
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+          <option value="forest">Forest</option>
+          <option value="ocean">Ocean</option>
+          <option value="ember">Ember</option>
+        </select>
+      </label>
+      <a class="download" id="csvLink" href="/api/usage.csv">CSV</a>
+      <button class="download" type="button" id="excelDownload">Excel</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <form class="controls" id="usageForm">
+      <label>
+        <span class="control-tooltip" tabindex="0" data-tooltip="Inclusive. Usage and cost starting on this date are included in the analysis window.">Start</span>
+        <input type="date" name="start" required>
+      </label>
+      <label>
+        <span class="control-tooltip" tabindex="0" data-tooltip="Exclusive. This date is the cutoff and is not included; the analyzed window ends on the previous calendar day.">End</span>
+        <input type="date" name="end" required>
+      </label>
+      <label>
+        Granularity
+        <select name="granularity">
+          <option>DAILY</option>
+          <option>MONTHLY</option>
+        </select>
+      </label>
+      <label>
+        Query
+        <select name="queryType">
+          <option>COST</option>
+          <option>USAGE</option>
+          <option>USAGE_ONLY</option>
+        </select>
+      </label>
+      <div class="field group-field">
+        <span class="field-label">Group By</span>
+        <details class="group-menu" id="groupMenu">
+          <summary id="groupSummary">Service</summary>
+          <div class="group-options" id="groupOptions"></div>
+        </details>
+        <input type="hidden" name="groupBy" id="groupByInput" value="service">
+      </div>
+      <label>
+        Compartment Depth
+        <select name="compartmentDepth">
+          <option value="">Default</option>
+          <option value="0">root</option>
+          <option value="1">root / level 1</option>
+          <option value="2">root / level 1 / level 2</option>
+          <option value="3">root / level 1 / level 2 / level 3</option>
+          <option value="4">root / level 1 / level 2 / level 3 / level 4</option>
+          <option value="5">root / level 1 / level 2 / level 3 / level 4 / level 5</option>
+        </select>
+      </label>
+      <button type="submit">Refresh</button>
+    </form>
+
+    <section class="period-summary" aria-live="polite">
+      <div class="period-summary-head">
+        <h2>Billing Period Summary</h2>
+      </div>
+      <div class="period-summary-grid">
+        <article class="period-window" data-tooltip="Dates actually analyzed. The API End input is exclusive, so the displayed through date is one calendar day before End.">
+          <span>Analysis Window</span>
+          <strong id="billingSummaryDays">0 days</strong>
+          <small id="billingSummaryWindow">Not selected</small>
+        </article>
+        <article class="period-skus" data-tooltip="Unique non-zero-cost SKU names reported by OCI for the selected billing period.">
+          <span>Unique SKUs</span>
+          <strong id="uniqueSkuCount">0</strong>
+          <small id="uniqueSkuDetail">No SKU data</small>
+        </article>
+        <article class="period-regions" data-tooltip="OCI regions with non-zero cost utilization during the selected billing period.">
+          <span>Active Regions</span>
+          <strong id="activeRegionCount">0</strong>
+          <small id="activeRegionDetail">No active regions</small>
+        </article>
+        <article class="period-average" data-tooltip="Average net cost per calendar day in the selected analysis window.">
+          <span>Daily Average</span>
+          <strong id="dailyAverageCost">$0.00</strong>
+          <small id="dailyAverageDetail">0 days analyzed</small>
+        </article>
+        <article class="period-peak" data-tooltip="Highest single-day net cost found in the selected billing period.">
+          <span>Peak Daily Cost</span>
+          <strong id="peakDailyCost">$0.00</strong>
+          <small id="peakDailyDetail">No daily cost</small>
+        </article>
+      </div>
+    </section>
+
+    <section class="summary" aria-live="polite">
+      <article class="summary-cost" data-tooltip="Net cost for the visible grouped rows after table filters are applied.">
+        <span>Total Cost</span>
+        <strong id="totalCost">$0.00</strong>
+      </article>
+      <article class="summary-usage" data-tooltip="Summed usage quantity across the visible grouped rows. Units depend on the selected grouping.">
+        <span>Total Usage</span>
+        <strong id="totalUsage">0</strong>
+      </article>
+      <article class="summary-rows" data-tooltip="Raw OCI usage rows represented by the visible grouped rows.">
+        <span>Rows</span>
+        <strong id="rowCount">0</strong>
+      </article>
+    </section>
+
+    <section class="legend-section" id="regionLegendSection" aria-label="Region Legend" hidden>
+      <div class="legend-head">
+        <h2>Region Legend</h2>
+      </div>
+      <div class="region-legend" id="regionLegend"></div>
+    </section>
+
+    <section class="chart-section">
+      <div class="chart-panel-head">
+        <div class="chart-note chart-title" id="chartNote" tabindex="0" data-tooltip="Ranks the currently visible grouped usage rows by the active chart metric. Filtering the table changes this chart and its totals."></div>
+        <div class="chart-panel-actions">
+          <span class="chart-total" id="usageChartTotal">Total $0.00</span>
+          <button class="chart-download" type="button" data-chart="usage" aria-label="Download grouped usage chart as PNG">PNG</button>
+        </div>
+      </div>
+      <div class="echart usage-echart" id="usageChart"></div>
+    </section>
+
+    <section class="insights-section">
+      <div class="table-head">
+        <h2>Cost Analytics</h2>
+        <span id="insightStatus">Loading charts</span>
+      </div>
+      <div class="insight-grid">
+        <article class="insight-card">
+          <div class="chart-panel-head">
+            <h3 class="chart-title" tabindex="0" data-tooltip="Shows which OCI regions carry the most net cost. Larger and darker blocks represent higher absolute cost.">Region Cost Heat Grid</h3>
+            <div class="chart-panel-actions">
+              <span class="chart-total" id="regionHeatTotal">Total $0.00</span>
+              <button class="chart-download" type="button" data-chart="regionHeat" aria-label="Download region cost heat grid as PNG">PNG</button>
+            </div>
+          </div>
+          <div class="echart mini-chart" id="regionHeatGrid"></div>
+        </article>
+        <article class="insight-card">
+          <div class="chart-panel-head">
+            <h3 class="chart-title" tabindex="0" data-tooltip="Shows the largest SKU-level cost contributors as a running total, making it easier to see what builds the monthly bill.">Top Cost Drivers Waterfall</h3>
+            <div class="chart-panel-actions">
+              <span class="chart-total" id="waterfallTotal">Total $0.00</span>
+              <button class="chart-download" type="button" data-chart="waterfall" aria-label="Download top cost drivers waterfall as PNG">PNG</button>
+            </div>
+          </div>
+          <div class="echart mini-chart" id="waterfallChart"></div>
+        </article>
+        <article class="insight-card wide-card">
+          <div class="chart-panel-head">
+            <h3 class="chart-title" tabindex="0" data-tooltip="Compares service cost across regions. Cell hue identifies the service, while stronger opacity means higher cost.">Service vs Region Matrix</h3>
+            <div class="chart-panel-actions">
+              <span class="chart-total" id="matrixTotal">Total $0.00</span>
+              <button class="chart-download" type="button" data-chart="matrix" aria-label="Download service vs region matrix as PNG">PNG</button>
+            </div>
+          </div>
+          <div class="echart matrix-chart" id="serviceRegionMatrix"></div>
+        </article>
+        <article class="insight-card wide-card">
+          <div class="chart-panel-head">
+            <h3 class="chart-title" tabindex="0" data-tooltip="Shows top compartment paths by net cost using the selected Compartment Depth filter. Bars stack by region so shared compartment spend is still visible.">Compartment Cost by Depth</h3>
+            <div class="chart-panel-actions">
+              <span class="chart-total" id="compartmentTotal">Total $0.00</span>
+              <button class="chart-download" type="button" data-chart="compartment" aria-label="Download compartment cost by depth chart as PNG">PNG</button>
+            </div>
+          </div>
+          <div class="echart compartment-chart" id="compartmentChart"></div>
+        </article>
+        <article class="insight-card">
+          <div class="chart-panel-head">
+            <h3 class="chart-title" tabindex="0" data-tooltip="Plots usage quantity against cost. Point color identifies the SKU group, and points far above the pack are expensive for their usage volume.">Unit Economics Scatterplot</h3>
+            <div class="chart-panel-actions">
+              <span class="chart-total" id="scatterTotal">Total $0.00</span>
+              <button class="chart-download" type="button" data-chart="scatter" aria-label="Download unit economics scatterplot as PNG">PNG</button>
+            </div>
+          </div>
+          <div class="echart mini-chart" id="scatterChart"></div>
+        </article>
+        <article class="insight-card">
+          <div class="chart-panel-head">
+            <h3 class="chart-title" tabindex="0" data-tooltip="Ranks SKUs by cost and overlays cumulative share, exposing whether a few SKUs dominate spend.">SKU Pareto Chart</h3>
+            <div class="chart-panel-actions">
+              <span class="chart-total" id="paretoTotal">Total $0.00</span>
+              <button class="chart-download" type="button" data-chart="pareto" aria-label="Download SKU pareto chart as PNG">PNG</button>
+            </div>
+          </div>
+          <div class="echart mini-chart" id="paretoChart"></div>
+        </article>
+        <article class="insight-card wide-card cost-composition-card">
+          <div class="chart-panel-head">
+            <h3 class="chart-title" tabindex="0" data-tooltip="Breaks net positive cost into service shares. Segment color identifies the service, and the tooltip still shows its dominant region.">Cost Composition</h3>
+            <div class="chart-panel-actions">
+              <span class="chart-total" id="donutTotal">Total $0.00</span>
+              <button class="chart-download" type="button" data-chart="donut" aria-label="Download cost composition chart as PNG">PNG</button>
+            </div>
+          </div>
+          <div class="echart mini-chart" id="donutChart"></div>
+        </article>
+        <article class="insight-card wide-card">
+          <div class="chart-panel-head">
+            <h3 class="chart-title" tabindex="0" data-tooltip="Sizes SKU labels by net cost so dominant and long-tail charges can be explored quickly. Hover any label for cost, share, usage, rows, and dominant region.">Long-Tail Cost Word Cloud</h3>
+            <div class="chart-panel-actions">
+              <span class="chart-total" id="stripTotal">Total $0.00</span>
+              <button class="chart-download" type="button" data-chart="strip" aria-label="Download long-tail cost word cloud as PNG">PNG</button>
+            </div>
+          </div>
+          <div class="echart cloud-chart" id="spendStrip"></div>
+        </article>
+        <article class="insight-card wide-card">
+          <div class="chart-panel-head">
+            <h3 class="chart-title" tabindex="0" data-tooltip="Shows top OCI services as cards with nested top SKUs and grouped Other rows. SKU rows include the part number and SKU description; hover a row for full description, cost, usage, share, row count, and dominant region.">Service Cards With Nested Top SKUs</h3>
+            <div class="chart-panel-actions">
+              <span class="chart-total" id="serviceSkuTotal">Total $0.00</span>
+              <button class="chart-download" type="button" data-chart="serviceSku" aria-label="Download service cards with nested top SKUs chart as PNG">PNG</button>
+            </div>
+          </div>
+          <div class="echart service-sku-chart" id="serviceSkuChart"></div>
+        </article>
+        <article class="insight-card wide-card">
+          <div class="chart-panel-head">
+            <h3 class="chart-title" tabindex="0" data-tooltip="Tracks regional cost over the previous six-month window ending at the selected report end date.">Region Drift</h3>
+            <div class="chart-panel-actions">
+              <span class="chart-total" id="driftTotal">Total $0.00</span>
+              <button class="chart-download" type="button" data-chart="drift" aria-label="Download region drift chart as PNG">PNG</button>
+            </div>
+          </div>
+          <div class="echart drift-chart" id="driftChart"></div>
+        </article>
+        <article class="insight-card wide-card">
+          <div class="chart-panel-head">
+            <h3 class="chart-title" tabindex="0" data-tooltip="Interactive daily cost views for the selected analysis window. Timeline shows spend trend and moving average; Spikes exposes day-over-day changes; Calendar scans daily totals; Ranking orders the highest-cost days; Pulse shows the month rhythm.">Daily Cost Explorer</h3>
+            <div class="chart-panel-actions">
+              <div class="daily-mode-toggle" role="group" aria-label="Daily cost chart view">
+                <button type="button" data-daily-mode="timeline" aria-pressed="true">Timeline</button>
+                <button type="button" data-daily-mode="spikes" aria-pressed="false">Spikes</button>
+                <button type="button" data-daily-mode="calendar" aria-pressed="false">Calendar</button>
+                <button type="button" data-daily-mode="ranking" aria-pressed="false">Ranking</button>
+                <button type="button" data-daily-mode="pulse" aria-pressed="false">Pulse</button>
+              </div>
+              <span class="chart-total" id="dailyHeatTotal">Total $0.00</span>
+              <button class="chart-download" type="button" data-chart="dailyHeat" aria-label="Download daily cost explorer as PNG">PNG</button>
+            </div>
+          </div>
+          <div class="echart daily-chart" id="dailyHeatMap"></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="table-section">
+      <div class="table-head">
+        <h2>Grouped Usage</h2>
+        <div class="table-head-actions">
+          <span id="statusText">Loading</span>
+          <button type="button" id="resetFilters">Reset</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="usageTable">
+          <colgroup>
+            <col data-column="region" style="width: 180px;">
+            <col data-column="group" style="width: 420px;">
+            <col data-column="cost" style="width: 130px;">
+            <col data-column="usage" style="width: 150px;">
+            <col data-column="currency" style="width: 130px;">
+            <col data-column="percentOfCost" style="width: 150px;">
+            <col data-column="count" style="width: 110px;">
+          </colgroup>
+          <thead>
+            <tr id="tableFilters">
+              <th data-column="region"></th>
+              <th data-column="group"></th>
+              <th data-column="cost"></th>
+              <th data-column="usage"></th>
+              <th data-column="currency"></th>
+              <th data-column="percentOfCost"></th>
+              <th data-column="count"></th>
+            </tr>
+          </thead>
+          <tbody id="usageRows"></tbody>
+          <tfoot>
+            <tr>
+              <th></th>
+              <th id="grandTotalLabel">Grand Total</th>
+              <td id="grandTotalCost">$0.00</td>
+              <td id="grandTotalUsage">0</td>
+              <td id="grandTotalCurrency"></td>
+              <td id="grandTotalShare">100%</td>
+              <td id="grandTotalRows">0</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer" aria-label="Dashboard context">
+    <div class="footer-meta">
+      <span>OCI Cost and Usage Dashboard</span>
+      <span>Source: OCI Usage API</span>
+      <span>Profile: <strong id="footerProfile">DEFAULT</strong></span>
+      <span>Window: <strong id="footerWindow">Not selected</strong></span>
+      <span>Last scan: <strong id="footerLastScan">Not run</strong></span>
+    </div>
+    <p>Filtered totals reflect current table filters. Costs are based on OCI Usage API computed amounts and may differ from invoices.</p>
+  </footer>
+
+  <script src="/vendor/echarts/echarts.min.js"></script>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+{
+  "name": "oci-cost-usage-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node.js app that reads Oracle Cloud Infrastructure Usage API data and reports tenancy usage/cost.",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "echarts": "^6.0.0",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "oci-common": "^2.117.0",
+    "oci-usageapi": "^2.117.0"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
+  }
+}
