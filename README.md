@@ -74,7 +74,7 @@ With config-file authentication, the tenancy OCID is inferred from the profile. 
 
 ### 3. Pick the Usage API Region
 
-Set `OCI_USAGE_REGION` to a valid OCI commercial region reachable for your tenancy. Example:
+Set `OCI_USAGE_REGION` to the tenancy home region by default. OCI Cost Analysis usage queries are served from the tenancy home region, so picking an arbitrary region is a bad assumption even when the report includes usage from many regions. Example:
 
 ```text
 OCI_USAGE_REGION=us-ashburn-1
@@ -90,6 +90,28 @@ This region is used for the Usage API client endpoint. It does not limit the rep
 - npm.
 - OCI CLI config under `~/.oci/config`, or another supported OCI auth method.
 - OCI policy granting usage report access.
+
+### Install Node.js If Needed
+
+Check whether Node.js and npm are already installed:
+
+```bash
+node --version
+npm --version
+```
+
+If Node.js is missing or older than version 20, install a current LTS release from the official Node.js distribution or your operating system package manager. On macOS with Homebrew:
+
+```bash
+brew install node
+```
+
+With `nvm`:
+
+```bash
+nvm install --lts
+nvm use --lts
+```
 
 ### Setup
 

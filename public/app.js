@@ -947,7 +947,7 @@ function drawSkuPareto(rows) {
       }
     },
     legend: { show: false },
-    grid: { left: 58, right: 28, top: 24, bottom: 42 },
+    grid: { left: 58, right: 28, top: 38, bottom: 42 },
     xAxis: {
       ...categoryAxis(top.map((_, index) => String(index + 1))),
       axisLabel: {
@@ -996,10 +996,15 @@ function drawSkuPareto(rows) {
             show: index === cumulativePct.length - 1 || value >= 0.8 && (cumulativePct[index - 1] || 0) < 0.8,
             formatter: percent.format(value),
             color: colorVar('--brand'),
+            backgroundColor: colorVar('--panel'),
+            borderColor: colorWithAlpha(colorVar('--brand'), 0.24),
+            borderRadius: 5,
+            borderWidth: 1,
             fontWeight: 900,
             fontSize: 11,
-            position: index === cumulativePct.length - 1 ? 'left' : 'top',
-            distance: 7
+            padding: [3, 6],
+            position: 'top',
+            distance: 13
           }
         })),
         lineStyle: { color: colorVar('--brand'), width: 3 },
@@ -1012,7 +1017,12 @@ function drawSkuPareto(rows) {
           label: {
             formatter: '80%',
             color: colorVar('--muted'),
+            backgroundColor: colorVar('--panel'),
+            borderColor: colorWithAlpha(colorVar('--muted'), 0.24),
+            borderRadius: 5,
+            borderWidth: 1,
             fontWeight: 900,
+            padding: [3, 6],
             position: 'insideStartTop'
           },
           data: [{ yAxis: 0.8 }]
