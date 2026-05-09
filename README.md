@@ -97,7 +97,36 @@ node --version
 npm --version
 ```
 
-For Oracle Linux, RHEL, Fedora, or other enterprise Linux distributions, install Node.js 20 or newer from your approved OS repository or NodeSource RPM repository, then verify `node --version` and `npm --version` before running the app.
+For Red Hat Enterprise Linux, Oracle Linux, Rocky Linux, AlmaLinux, or Fedora, first check whether your approved OS repositories provide Node.js 20 or newer:
+
+```bash
+sudo dnf module list nodejs
+sudo dnf module reset -y nodejs
+sudo dnf module enable -y nodejs:20
+sudo dnf install -y nodejs npm
+node --version
+npm --version
+```
+
+If the OS repositories do not provide Node.js 20 or newer, use the NodeSource RPM repository:
+
+```bash
+sudo dnf install -y ca-certificates curl
+curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash -
+sudo dnf install -y nodejs
+node --version
+npm --version
+```
+
+On older Oracle Linux or RHEL systems where `dnf` is not available, use `yum` with the same NodeSource setup script:
+
+```bash
+sudo yum install -y ca-certificates curl
+curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash -
+sudo yum install -y nodejs
+node --version
+npm --version
+```
 
 If your OS repository installs a version older than 20, use `nvm`:
 
