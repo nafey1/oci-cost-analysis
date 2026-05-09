@@ -3,6 +3,19 @@ const rowsEl = document.querySelector('#usageRows');
 const statusText = document.querySelector('#statusText');
 const scanStatus = document.querySelector('#scanStatus');
 const scanDetail = document.querySelector('#scanDetail');
+const scanProgress = document.querySelector('#scanProgress');
+const scanProgressLabel = document.querySelector('#scanProgressLabel');
+const scanProgressPercent = document.querySelector('#scanProgressPercent');
+const scanProgressFill = document.querySelector('#scanProgressFill');
+const scanErrorPanel = document.querySelector('#scanErrorPanel');
+const scanErrorDismiss = document.querySelector('#scanErrorDismiss');
+const scanErrorMessage = document.querySelector('#scanErrorMessage');
+const scanErrorPhase = document.querySelector('#scanErrorPhase');
+const scanErrorStatus = document.querySelector('#scanErrorStatus');
+const scanErrorTime = document.querySelector('#scanErrorTime');
+const scanErrorEndpoint = document.querySelector('#scanErrorEndpoint');
+const scanErrorDetail = document.querySelector('#scanErrorDetail');
+const scanErrorHint = document.querySelector('#scanErrorHint');
 const totalCost = document.querySelector('#totalCost');
 const totalUsage = document.querySelector('#totalUsage');
 const rowCount = document.querySelector('#rowCount');
@@ -49,6 +62,30 @@ const dailyAverageCost = document.querySelector('#dailyAverageCost');
 const dailyAverageDetail = document.querySelector('#dailyAverageDetail');
 const peakDailyCost = document.querySelector('#peakDailyCost');
 const peakDailyDetail = document.querySelector('#peakDailyDetail');
+const scanFacts = document.querySelector('#scanFacts');
+const scanFactsUpdated = document.querySelector('#scanFactsUpdated');
+const scanFactsToggle = document.querySelector('#scanFactsToggle');
+const scanFactsDetails = document.querySelector('#scanFactsDetails');
+const factApiCalls = document.querySelector('#factApiCalls');
+const factApiCallDetail = document.querySelector('#factApiCallDetail');
+const factRows = document.querySelector('#factRows');
+const factRowsDetail = document.querySelector('#factRowsDetail');
+const factPayload = document.querySelector('#factPayload');
+const factPayloadDetail = document.querySelector('#factPayloadDetail');
+const factOciLatency = document.querySelector('#factOciLatency');
+const factOciLatencyDetail = document.querySelector('#factOciLatencyDetail');
+const factServerLatency = document.querySelector('#factServerLatency');
+const factServerLatencyDetail = document.querySelector('#factServerLatencyDetail');
+const factDelivery = document.querySelector('#factDelivery');
+const factDeliveryDetail = document.querySelector('#factDeliveryDetail');
+const factRowsPerCall = document.querySelector('#factRowsPerCall');
+const factPayloadPerRow = document.querySelector('#factPayloadPerRow');
+const factAverageCall = document.querySelector('#factAverageCall');
+const factDatasetCount = document.querySelector('#factDatasetCount');
+const factOperationMix = document.querySelector('#factOperationMix');
+const factDatasetMix = document.querySelector('#factDatasetMix');
+const factSlowestCall = document.querySelector('#factSlowestCall');
+const factSlowestCallDetail = document.querySelector('#factSlowestCallDetail');
 const footerProfile = document.querySelector('#footerProfile');
 const footerWindow = document.querySelector('#footerWindow');
 const footerLastScan = document.querySelector('#footerLastScan');
@@ -88,6 +125,7 @@ const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD
 const number = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
 const percent = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 1 });
 const compactNumber = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
+const scanFactsCollapsedStorageKey = 'oci-cost:facts-collapsed:v2';
 let groupByOptions = [];
 let currentReport;
 let currentInsights;
@@ -97,8 +135,14 @@ let currentDailyRows = [];
 let currentDailyQuery;
 let activeScanId = 0;
 let dailyExplorerMode = 'timeline';
+let regionLegendSort = { key: 'cost', direction: 'desc' };
+let currentScanProgressValue = 0;
+let currentScanPhase = 'Idle';
+let scanFactsCollapsed = loadScanFactsCollapsed();
 
 const charts = new Map();
+const regionHueAssignments = new Map();
+const distinctRegionHues = [216, 4, 146, 276, 32, 188, 326, 258, 82, 294, 170, 44, 238, 118, 352, 198];
 
 const tableColumns = [
   { key: 'region', label: 'Region', value: (row) => row.region || 'Unspecified' },
@@ -111,12 +155,17 @@ const tableColumns = [
 ];
 
 applyTheme(localStorage.getItem('oci-cost-theme') || 'light', false);
-loadDefaults().catch(showError);
+syncScanFactsToggle();
+setDownloadsEnabled(false);
+loadDefaults().then(loadLatestDashboardScan).catch(showError);
 
 form.addEventListener('submit', (event) => {
   event.preventDefault();
   loadReport().catch(showError);
 });
+
+form.addEventListener('input', markReportCriteriaChanged);
+form.addEventListener('change', markReportCriteriaChanged);
 
 form.start.addEventListener('input', clearEndDateWhenStartIsAfterEnd);
 form.start.addEventListener('change', clearEndDateWhenStartIsAfterEnd);
@@ -127,6 +176,22 @@ themeSelector.addEventListener('change', () => {
 
 excelDownload.addEventListener('click', () => {
   downloadExcel().catch(showError);
+});
+
+csvLink.addEventListener('click', (event) => {
+  if (csvLink.getAttribute('aria-disabled') === 'true' || !currentReport) {
+    event.preventDefault();
+  }
+});
+
+scanErrorDismiss.addEventListener('click', () => {
+  hideScanError();
+});
+
+scanFactsToggle.addEventListener('click', () => {
+  scanFactsCollapsed = !scanFactsCollapsed;
+  saveScanFactsCollapsed(scanFactsCollapsed);
+  syncScanFactsToggle();
 });
 
 for (const button of document.querySelectorAll('.chart-download')) {
@@ -182,6 +247,17 @@ resetFilters.addEventListener('click', () => {
 
 tableFilters.addEventListener('pointerdown', beginColumnResize);
 
+regionLegend.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-region-legend-sort]');
+  if (!button || !currentReport) return;
+  const key = button.dataset.regionLegendSort;
+  regionLegendSort = {
+    key,
+    direction: regionLegendSort.key === key && regionLegendSort.direction === 'asc' ? 'desc' : 'asc'
+  };
+  renderRegionLegend(currentReport.byGroup || []);
+});
+
 window.addEventListener('resize', () => {
   for (const chart of charts.values()) chart.resize();
 });
@@ -201,16 +277,117 @@ async function loadDefaults() {
   renderGroupByOptions(config.defaults.groupBy);
 }
 
+async function loadLatestDashboardScan() {
+  const scanId = ++activeScanId;
+  let report;
+  hideScanError();
+  setScanProgress(8, 'Checking saved scan', 'Looking for the most recent persisted report.', { state: 'scanning' });
+  try {
+    report = await fetchLatestReport();
+  } catch (error) {
+    setScanProgress(0, 'No saved scan', 'No persisted scan is available yet.', { hidden: true });
+    if (error.status === 404) return;
+    console.warn(`Unable to load latest persisted scan: ${error.message}`);
+    return;
+  }
+
+  if (!isActiveScan(scanId)) return;
+  setScanProgress(45, 'Restoring saved table', 'Rendering the latest persisted grouped usage report.', { state: 'scanning' });
+  hydrateFormFromReport(report);
+  renderReport(report);
+  setScanState('complete', 'Last scan loaded', lastScanLoadedDetail(report));
+  statusText.textContent = statusFor(report);
+  insightStatus.textContent = 'Loading saved charts';
+
+  try {
+    const params = paramsFromReport(report);
+    const persistedInsights = await loadInsightReports(params, {
+      cacheOnly: true,
+      onProgress: ({ name, completed, total }) => {
+        setScanProgress(
+          52 + Math.round((completed / total) * 38),
+          `Restoring ${insightProgressLabel(name)}`,
+          `${completed} of ${total} saved chart datasets restored.`,
+          { state: 'scanning' }
+        );
+      }
+    });
+    if (!isActiveScan(scanId)) return;
+    if (hasAnyInsightReport(persistedInsights)) {
+      currentInsights = persistedInsights;
+      setScanProgress(94, 'Rendering saved charts', 'Drawing persisted chart datasets.', { state: 'scanning' });
+      renderInsights(persistedInsights);
+      insightStatus.textContent = 'Saved charts loaded';
+    } else {
+      insightStatus.textContent = 'Saved table loaded; chart datasets are not available for this scan';
+    }
+  } catch (error) {
+    console.warn(`Unable to load saved chart datasets: ${error.message}`);
+    if (isActiveScan(scanId)) {
+      insightStatus.textContent = 'Saved table loaded; chart datasets are not available for this scan';
+    }
+  }
+  if (isActiveScan(scanId)) {
+    setScanProgress(100, 'Last scan loaded', lastScanLoadedDetail(report), { state: 'complete' });
+  }
+}
+
+async function fetchLatestReport() {
+  const response = await fetch('/api/usage/latest');
+  const body = await response.json();
+  if (!response.ok) {
+    const error = new Error(body.detail || body.error || 'Latest persisted scan unavailable');
+    error.status = response.status;
+    throw error;
+  }
+  return body;
+}
+
+function hydrateFormFromReport(report) {
+  const query = report?.query || {};
+  if (query.start) form.start.value = query.start;
+  if (query.end) form.end.value = query.end;
+  if (query.granularity) form.granularity.value = query.granularity;
+  if (query.queryType) form.queryType.value = query.queryType;
+  renderGroupByOptions(Array.isArray(query.groupBy) ? query.groupBy.join(',') : query.groupBy);
+  if (query.compartmentDepth !== undefined && query.compartmentDepth !== '') {
+    form.compartmentDepth.value = String(query.compartmentDepth);
+  } else {
+    form.compartmentDepth.value = '';
+  }
+}
+
+function paramsFromReport(report) {
+  const query = report?.query || {};
+  const params = new URLSearchParams();
+  for (const key of ['start', 'end', 'granularity', 'queryType', 'compartmentDepth', 'tenantId']) {
+    if (query[key] !== undefined && query[key] !== '') params.set(key, query[key]);
+  }
+  if (Array.isArray(query.groupBy)) {
+    params.set('groupBy', query.groupBy.join(','));
+  } else if (query.groupBy) {
+    params.set('groupBy', query.groupBy);
+  }
+  return params;
+}
+
 function clearEndDateWhenStartIsAfterEnd() {
   if (form.start.value && form.end.value && form.start.value > form.end.value) {
     form.end.value = '';
   }
 }
 
+function markReportCriteriaChanged() {
+  if (!currentReport) return;
+  setDownloadsEnabled(false);
+}
+
 async function loadReport() {
   const scanId = ++activeScanId;
   const scanStartedAt = performance.now();
+  hideScanError();
   setScanState('scanning', 'Scanning', 'Fetching usage, chart datasets, and daily detail');
+  setScanProgress(4, 'Preparing scan', 'Building the OCI Usage API request.', { state: 'scanning' });
   statusText.textContent = 'Scanning';
   insightStatus.textContent = 'Scanning charts';
   updateFooterWindow(form.start.value, form.end.value);
@@ -218,35 +395,106 @@ async function loadReport() {
   setBillingSummaryPending();
   currentDailyRows = [];
   currentDailyQuery = undefined;
-  excelDownload.disabled = true;
+  currentInsights = undefined;
+  setDownloadsEnabled(false);
   const params = new URLSearchParams(new FormData(form));
-  csvLink.href = `/api/usage.csv?${params}`;
   let report;
+  let restoredSnapshot = false;
 
   try {
-    report = await fetchReport(params);
+    restoredSnapshot = await loadPersistedSnapshot(scanId, params);
     if (!isActiveScan(scanId)) return;
+    setScanProgress(34, 'Fetching grouped usage', 'Waiting on the fresh OCI grouped usage request.', { state: 'scanning', indeterminate: true });
+    report = await fetchReport(requestParams(params, { refresh: true, remember: true }));
+    if (!isActiveScan(scanId)) return;
+    setScanProgress(50, 'Rendering grouped usage', 'Building totals, filters, region legend, and table rows.', { state: 'scanning' });
     renderReport(report);
   } catch (error) {
     if (!isActiveScan(scanId)) return;
+    if (restoredSnapshot) {
+      setScanState('error', 'Refresh failed', `Previous persisted scan remains visible. ${error.message || 'Fresh OCI scan failed.'}`);
+      setScanProgress(undefined, 'Refresh failed', 'Previous persisted scan remains visible.', { state: 'error' });
+      showScanError(error, { message: 'Fresh scan failed; previous scan remains visible' });
+      statusText.textContent = error.message || 'Fresh OCI scan failed';
+      insightStatus.textContent = 'Previous charts remain visible where persisted data was available.';
+      setDownloadsEnabled(true, currentReport);
+      return;
+    }
     throw error;
   }
 
   try {
-    currentInsights = await loadInsightReports(params);
+    setScanProgress(56, 'Fetching chart datasets', '0 of 5 chart datasets complete.', { state: 'scanning' });
+    currentInsights = await loadInsightReports(params, {
+      refresh: true,
+      onProgress: ({ name, completed, total }) => {
+        setScanProgress(
+          56 + Math.round((completed / total) * 34),
+          `Fetching ${insightProgressLabel(name)}`,
+          `${completed} of ${total} chart datasets complete.`,
+          { state: 'scanning' }
+        );
+      }
+    });
     if (!isActiveScan(scanId)) return;
+    setScanProgress(94, 'Rendering charts', 'Drawing chart panels and recalculating chart totals.', { state: 'scanning' });
     renderInsights(currentInsights);
-    setScanState('complete', 'Scan complete', scanCompletionDetail(report, currentInsights, performance.now() - scanStartedAt));
+    const elapsedMs = performance.now() - scanStartedAt;
+    setScanProgress(98, 'Finalizing telemetry', 'Calculating scan timing, rows, payload, and cache facts.', { state: 'scanning' });
+    renderScanFacts(report, currentInsights, { clientElapsedMs: elapsedMs });
+    setScanState('complete', 'Scan complete', scanCompletionDetail(report, currentInsights, elapsedMs));
+    setScanProgress(100, 'Scan complete', scanCompletionDetail(report, currentInsights, elapsedMs), { state: 'complete' });
   } catch (error) {
     if (!isActiveScan(scanId)) return;
     currentInsights = undefined;
     insightStatus.textContent = error.message || 'Unable to load charts';
     setBillingSummaryUnavailable();
     drawUnavailableInsightCharts();
-    setScanState('complete', 'Scan complete', scanCompletionDetail(report, currentInsights, performance.now() - scanStartedAt, error));
+    const elapsedMs = performance.now() - scanStartedAt;
+    renderScanFacts(report, currentInsights, { clientElapsedMs: elapsedMs });
+    setScanState('complete', 'Scan complete', scanCompletionDetail(report, currentInsights, elapsedMs, error));
+    setScanProgress(100, 'Scan complete with chart errors', scanCompletionDetail(report, currentInsights, elapsedMs, error), { state: 'complete' });
   } finally {
-    if (isActiveScan(scanId)) excelDownload.disabled = false;
+    if (isActiveScan(scanId)) setDownloadsEnabled(Boolean(currentReport), currentReport);
   }
+}
+
+async function loadPersistedSnapshot(scanId, params) {
+  let report;
+  setScanProgress(10, 'Checking persisted report', 'Trying to restore the matching saved table before the fresh scan.', { state: 'scanning' });
+  try {
+    report = await fetchReport(requestParams(params, { cacheOnly: true }));
+  } catch (error) {
+    if (error.status === 404) return false;
+    console.warn(`Unable to load persisted report: ${error.message}`);
+    return false;
+  }
+
+  if (!isActiveScan(scanId)) return false;
+  setScanProgress(18, 'Showing previous table', 'Previous persisted scan is visible while the fresh scan runs.', { state: 'scanning' });
+  renderReport(report);
+  setScanState('scanning', 'Scanning', previousScanDetail(report));
+  insightStatus.textContent = 'Loading persisted charts while fresh scan runs';
+
+  setScanProgress(22, 'Loading saved charts', '0 of 5 saved chart datasets restored.', { state: 'scanning' });
+  const persistedInsights = await loadInsightReports(params, {
+    cacheOnly: true,
+    onProgress: ({ name, completed, total }) => {
+      setScanProgress(
+        22 + Math.round((completed / total) * 10),
+        `Restoring ${insightProgressLabel(name)}`,
+        `${completed} of ${total} saved chart datasets restored.`,
+        { state: 'scanning' }
+      );
+    }
+  });
+  if (!isActiveScan(scanId)) return true;
+  if (hasAnyInsightReport(persistedInsights)) {
+    currentInsights = persistedInsights;
+    renderInsights(persistedInsights);
+  }
+  setScanProgress(32, 'Starting fresh scan', 'Previous scan is loaded; fresh OCI request is starting.', { state: 'scanning' });
+  return true;
 }
 
 function isActiveScan(scanId) {
@@ -275,24 +523,39 @@ function drawUnavailableInsightChart(element, key, insights) {
   drawEmptyChart(element, insights.errors?.[key] || 'Chart data unavailable.');
 }
 
-async function fetchReport(params) {
-  const response = await fetch(`/api/usage?${params}`);
-  const body = await response.json();
+async function fetchReport(params, options = {}) {
+  const endpoint = `/api/usage?${params}`;
+  const response = await fetch(endpoint);
+  const body = await parseResponseBody(response);
   if (!response.ok) {
     const error = new Error(body.detail || body.error || 'Usage request failed');
     error.status = response.status;
+    error.statusText = response.statusText;
+    error.endpoint = sanitizeEndpoint(endpoint);
+    error.scanPhase = options.phase || currentScanPhase;
+    error.responseBody = body;
     throw error;
   }
   return body;
 }
 
-async function fetchReportWithRetry(params) {
+async function fetchReportWithRetry(params, options = {}) {
   try {
-    return await fetchReport(params);
+    return await fetchReport(params, options);
   } catch (error) {
     if (error.status !== 429) throw error;
     await delay(1400);
-    return fetchReport(params);
+    return fetchReport(params, options);
+  }
+}
+
+async function parseResponseBody(response) {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { detail: text };
   }
 }
 
@@ -302,20 +565,22 @@ function delay(ms) {
 
 async function fetchInsightReport(name, params) {
   try {
-    return { name, report: await fetchReportWithRetry(params) };
+    return { name, report: await fetchReportWithRetry(params, { phase: `Fetching ${insightProgressLabel(name)}` }) };
   } catch (error) {
     return { name, error: error.message || 'Insight query failed' };
   }
 }
 
-async function loadInsightReports(params) {
+async function loadInsightReports(params, options = {}) {
   const serviceParams = new URLSearchParams(params);
   serviceParams.set('queryType', 'COST');
   serviceParams.set('groupBy', 'service');
+  applyRequestOptions(serviceParams, options);
 
   const skuParams = new URLSearchParams(params);
   skuParams.set('queryType', 'COST');
   skuParams.set('groupBy', 'service,skuPartNumber,skuName');
+  applyRequestOptions(skuParams, options);
 
   const compartmentParams = new URLSearchParams(params);
   compartmentParams.set('queryType', 'COST');
@@ -323,6 +588,7 @@ async function loadInsightReports(params) {
   if (!compartmentParams.get('compartmentDepth')) {
     compartmentParams.set('compartmentDepth', '5');
   }
+  applyRequestOptions(compartmentParams, options);
 
   const driftParams = new URLSearchParams(params);
   const driftWindow = driftWindowFor(String(params.get('end') || form.end.value));
@@ -332,20 +598,32 @@ async function loadInsightReports(params) {
   driftParams.set('queryType', 'COST');
   driftParams.set('groupBy', 'service');
   driftParams.set('includeRows', 'true');
+  applyRequestOptions(driftParams, options);
 
   const dailyParams = new URLSearchParams(params);
   dailyParams.set('granularity', 'DAILY');
   dailyParams.set('queryType', 'COST');
   dailyParams.set('groupBy', 'service');
   dailyParams.set('includeRows', 'true');
+  applyRequestOptions(dailyParams, options);
 
-  const results = [
-    await fetchInsightReport('service', serviceParams),
-    await fetchInsightReport('sku', skuParams),
-    await fetchInsightReport('compartment', compartmentParams),
-    await fetchInsightReport('drift', driftParams),
-    await fetchInsightReport('daily', dailyParams)
+  const insightRequests = [
+    ['service', serviceParams],
+    ['sku', skuParams],
+    ['compartment', compartmentParams],
+    ['drift', driftParams],
+    ['daily', dailyParams]
   ];
+  let completed = 0;
+
+  const results = await Promise.all(insightRequests.map(async ([name, insightParams]) => {
+    const result = await fetchInsightReport(name, insightParams);
+    completed += 1;
+    if (typeof options.onProgress === 'function') {
+      options.onProgress({ name, completed, total: insightRequests.length, result });
+    }
+    return result;
+  }));
 
   const insights = { errors: {} };
   for (const result of results) {
@@ -359,6 +637,22 @@ async function loadInsightReports(params) {
   return insights;
 }
 
+function requestParams(params, options = {}) {
+  const next = new URLSearchParams(params);
+  applyRequestOptions(next, options);
+  return next;
+}
+
+function applyRequestOptions(params, options = {}) {
+  if (options.cacheOnly) params.set('cacheOnly', 'true');
+  if (options.refresh) params.set('refresh', 'true');
+  if (options.remember) params.set('remember', 'true');
+}
+
+function hasAnyInsightReport(insights) {
+  return ['service', 'sku', 'compartment', 'drift', 'daily'].some((name) => insights?.[name]);
+}
+
 function renderReport(report) {
   currentReport = report;
   updateFooterWindow(report.query.start, report.query.end);
@@ -367,6 +661,8 @@ function renderReport(report) {
   renderRegionLegend(report.byGroup || []);
   renderTableFilters(report);
   applyTableFilters();
+  setDownloadsEnabled(true, report);
+  renderScanFacts(report);
 }
 
 function renderVisibleRows(rows, totals) {
@@ -514,6 +810,7 @@ function renderInsights(insights) {
       ? `${number.format(costRows)} non-zero cost groups analyzed; ${failed.length} chart source${failed.length === 1 ? '' : 's'} unavailable`
       : `${number.format(costRows)} non-zero cost groups analyzed`;
   }
+  renderScanFacts(currentReport, insights);
 }
 
 function renderBillingPeriodSummary(insights) {
@@ -2381,6 +2678,7 @@ function syncGroupBySelection(event) {
   groupSummary.textContent = labels.length
     ? labels.length <= 2 ? labels.join(', ') : `${labels.length} fields selected`
     : 'None selected';
+  if (currentReport) setDownloadsEnabled(false);
 }
 
 function renderTableFilters(report) {
@@ -2556,6 +2854,7 @@ function renderRegionLegend(rows) {
   const regions = aggregateRows(rows, (row) => row.region || 'Unspecified')
     .filter((row) => row.cost !== 0)
     .sort((a, b) => Math.abs(b.cost) - Math.abs(a.cost));
+  configureRegionColors(regions.map((row) => row.key));
 
   regionLegendSection.hidden = !regions.length;
   if (!regions.length) {
@@ -2564,18 +2863,19 @@ function renderRegionLegend(rows) {
   }
 
   const totalMagnitude = regions.reduce((sum, row) => sum + Math.abs(row.cost || 0), 0) || 1;
+  const sortedRegions = sortRegionLegendRows(regions, totalMagnitude);
   regionLegend.innerHTML = `
     <table class="region-legend-table">
       <thead>
         <tr>
-          <th scope="col">Color</th>
-          <th scope="col">Region</th>
-          <th scope="col">Net cost</th>
-          <th scope="col">Share</th>
+          ${regionLegendHeader('color', 'Color')}
+          ${regionLegendHeader('region', 'Region')}
+          ${regionLegendHeader('cost', 'Net cost')}
+          ${regionLegendHeader('share', 'Share')}
         </tr>
       </thead>
       <tbody>
-        ${regions.map((row) => `
+        ${sortedRegions.map((row) => `
           <tr style="--legend-color: ${escapeHtml(regionSeriesColor(row.key))}" title="${escapeHtml(`${row.key}: ${formatCost(row.cost)}`)}">
             <td>
               <span class="legend-swatch" aria-hidden="true"></span>
@@ -2590,37 +2890,104 @@ function renderRegionLegend(rows) {
   `;
 }
 
+function regionLegendHeader(key, label) {
+  const active = regionLegendSort.key === key;
+  const direction = active ? regionLegendSort.direction : 'none';
+  const indicator = active ? regionLegendSort.direction === 'asc' ? 'Asc' : 'Desc' : 'Sort';
+  return `
+    <th scope="col" aria-sort="${direction === 'none' ? 'none' : direction === 'asc' ? 'ascending' : 'descending'}">
+      <button type="button" class="legend-sort-button" data-region-legend-sort="${escapeHtml(key)}">
+        <span>${escapeHtml(label)}</span>
+        <span aria-hidden="true">${indicator}</span>
+      </button>
+    </th>
+  `;
+}
+
+function sortRegionLegendRows(rows, totalMagnitude) {
+  const direction = regionLegendSort.direction === 'asc' ? 1 : -1;
+  const sorted = rows.slice().sort((a, b) => {
+    let result;
+    if (regionLegendSort.key === 'region') {
+      result = a.key.localeCompare(b.key, undefined, { numeric: true });
+    } else if (regionLegendSort.key === 'color') {
+      result = regionHue(a.key) - regionHue(b.key);
+    } else if (regionLegendSort.key === 'share') {
+      result = (Math.abs(a.cost || 0) / totalMagnitude) - (Math.abs(b.cost || 0) / totalMagnitude);
+    } else {
+      result = (a.cost || 0) - (b.cost || 0);
+    }
+    return result * direction || a.key.localeCompare(b.key, undefined, { numeric: true });
+  });
+  return sorted;
+}
+
 async function downloadExcel() {
   if (!currentReport) return;
   excelDownload.disabled = true;
-  const response = await fetch('/api/usage.xlsx', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      query: currentReport.query,
-      totals: currentVisibleTotals,
-      rows: currentVisibleRows.map((row) => ({
-        ...row,
-        percentOfCost: currentVisibleTotals?.cost ? (row.cost || 0) / currentVisibleTotals.cost : 0
-      }))
-    })
-  });
+  try {
+    const response = await fetch('/api/usage.xlsx', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query: currentReport.query,
+        totals: currentVisibleTotals,
+        rows: currentVisibleRows.map((row) => ({
+          ...row,
+          percentOfCost: currentVisibleTotals?.cost ? (row.cost || 0) / currentVisibleTotals.cost : 0
+        }))
+      })
+    });
 
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail || body.error || 'Excel download failed');
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.detail || body.error || 'Excel download failed');
+    }
+
+    const blob = await response.blob();
+    const href = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = href;
+    anchor.download = `oci-usage-${currentReport.query.start}-to-${currentReport.query.end}.xlsx`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(href);
+  } finally {
+    if (currentReport) excelDownload.disabled = false;
+  }
+}
+
+function setDownloadsEnabled(enabled, report = currentReport) {
+  const ready = Boolean(enabled && report);
+  excelDownload.disabled = !ready;
+
+  if (!ready) {
+    csvLink.removeAttribute('href');
+    csvLink.setAttribute('aria-disabled', 'true');
+    csvLink.dataset.disabled = 'true';
+    csvLink.tabIndex = -1;
+    return;
   }
 
-  const blob = await response.blob();
-  const href = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = href;
-  anchor.download = `oci-usage-${form.start.value}-to-${form.end.value}.xlsx`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(href);
-  excelDownload.disabled = false;
+  csvLink.href = `/api/usage.csv?${reportCsvParams(report)}`;
+  csvLink.setAttribute('aria-disabled', 'false');
+  csvLink.dataset.disabled = 'false';
+  csvLink.removeAttribute('tabindex');
+}
+
+function reportCsvParams(report) {
+  const query = report?.query || {};
+  const params = new URLSearchParams();
+  for (const key of ['start', 'end', 'granularity', 'queryType', 'compartmentDepth', 'tenantId']) {
+    if (query[key] !== undefined && query[key] !== '') params.set(key, query[key]);
+  }
+  if (Array.isArray(query.groupBy)) {
+    params.set('groupBy', query.groupBy.join(','));
+  } else if (query.groupBy) {
+    params.set('groupBy', query.groupBy);
+  }
+  return params;
 }
 
 function downloadChart(key) {
@@ -3413,6 +3780,41 @@ function applyTheme(theme, rerender) {
   if (currentInsights) renderInsights(currentInsights);
 }
 
+function setScanProgress(value, label, detail = '', options = {}) {
+  if (!scanProgress) return;
+
+  if (options.hidden) {
+    scanProgress.hidden = true;
+    return;
+  }
+
+  const state = options.state || (value >= 100 ? 'complete' : 'scanning');
+  const numericValue = Number(value);
+  const percentValue = Number.isFinite(numericValue)
+    ? Math.max(0, Math.min(100, numericValue))
+    : currentScanProgressValue;
+  currentScanProgressValue = percentValue;
+  currentScanPhase = label || currentScanPhase;
+  scanProgress.hidden = false;
+  scanProgress.dataset.state = state;
+  scanProgress.dataset.indeterminate = options.indeterminate ? 'true' : 'false';
+  scanProgress.title = detail || label || '';
+
+  if (scanProgressLabel) scanProgressLabel.textContent = label || 'Scanning';
+  if (scanProgressPercent) scanProgressPercent.textContent = `${Math.round(percentValue)}%`;
+  if (scanProgressFill) scanProgressFill.style.width = `${percentValue}%`;
+}
+
+function insightProgressLabel(name) {
+  return {
+    service: 'service costs',
+    sku: 'SKU costs',
+    compartment: 'compartment costs',
+    drift: 'month drift',
+    daily: 'daily costs'
+  }[name] || 'chart data';
+}
+
 function setScanState(state, label, detail = '') {
   scanStatus.textContent = label;
   scanStatus.dataset.state = state;
@@ -3425,11 +3827,344 @@ function setScanState(state, label, detail = '') {
     : '';
 }
 
+function showScanError(error, options = {}) {
+  if (!scanErrorPanel) return;
+  const status = error.status
+    ? `HTTP ${error.status}${error.statusText ? ` ${error.statusText}` : ''}`
+    : 'No HTTP response';
+
+  scanErrorPanel.hidden = false;
+  scanErrorMessage.textContent = options.message || error.message || 'Scan failed';
+  scanErrorPhase.textContent = error.scanPhase || currentScanPhase || 'Unknown';
+  scanErrorStatus.textContent = status;
+  scanErrorTime.textContent = new Date().toLocaleString();
+  scanErrorEndpoint.textContent = error.endpoint || 'Frontend';
+  scanErrorDetail.textContent = scanFailureDetail(error);
+  scanErrorHint.textContent = scanFailureHint(error);
+}
+
+function hideScanError() {
+  if (scanErrorPanel) scanErrorPanel.hidden = true;
+}
+
+function scanFailureDetail(error) {
+  const parts = [`Message: ${error.message || 'Unknown scan failure.'}`];
+  if (error.responseBody && Object.keys(error.responseBody).length) {
+    parts.push(`Response body:\n${JSON.stringify(error.responseBody, null, 2)}`);
+  }
+  return parts.join('\n\n');
+}
+
+function scanFailureHint(error) {
+  if (!error.status) {
+    return 'The browser did not receive an HTTP response. Check whether the Node server is still running and reachable.';
+  }
+  if (error.status === 400) {
+    return 'The request was rejected before OCI was called. Check date order, group-by values, compartment depth, and tenancy OCID input.';
+  }
+  if (error.status === 401 || error.status === 403) {
+    return 'OCI rejected the request. Check the DEFAULT profile credentials, tenancy permissions, and that the Usage API region is the tenancy home region.';
+  }
+  if (error.status === 404) {
+    return 'The requested cached or persisted report was not found. Run a fresh scan for this analysis window.';
+  }
+  if (error.status === 429) {
+    return 'OCI throttled the request. Wait briefly and retry with fewer chart datasets or a narrower analysis window.';
+  }
+  if (error.status >= 500) {
+    return 'The backend or OCI SDK failed while processing the scan. Check the server terminal logs for the full stack trace and OCI SDK error.';
+  }
+  return 'Review the phase, endpoint, and response body above; those are the fastest clues for the next fix.';
+}
+
+function previousScanDetail(report) {
+  const generated = report?.generatedAt ? new Date(report.generatedAt).toLocaleString() : 'an earlier run';
+  const persisted = report?.delivery?.persistedAt ? `, saved ${new Date(report.delivery.persistedAt).toLocaleString()}` : '';
+  const rows = report?.totals?.rowCount ? `${number.format(report.totals.rowCount)} rows` : 'stored data';
+  return `Showing previous scan generated ${generated}${persisted} (${rows}) while a fresh OCI scan runs.`;
+}
+
+function lastScanLoadedDetail(report) {
+  const generated = report?.generatedAt ? new Date(report.generatedAt).toLocaleString() : 'an earlier run';
+  const persisted = report?.delivery?.persistedAt ? `, saved ${new Date(report.delivery.persistedAt).toLocaleString()}` : '';
+  const rows = report?.totals?.rowCount ? `${number.format(report.totals.rowCount)} rows` : 'stored data';
+  return `Restored persisted scan generated ${generated}${persisted} (${rows}). Refresh to scan OCI again.`;
+}
+
+function loadScanFactsCollapsed() {
+  try {
+    const stored = window.localStorage.getItem(scanFactsCollapsedStorageKey);
+    return stored === null ? true : stored === 'true';
+  } catch {
+    return true;
+  }
+}
+
+function saveScanFactsCollapsed(value) {
+  try {
+    window.localStorage.setItem(scanFactsCollapsedStorageKey, String(Boolean(value)));
+  } catch {
+    // Ignore storage failures; the toggle still works for this page view.
+  }
+}
+
+function syncScanFactsToggle() {
+  if (!scanFactsToggle || !scanFactsDetails) return;
+  scanFactsDetails.hidden = scanFactsCollapsed;
+  scanFactsToggle.textContent = scanFactsCollapsed ? 'Show' : 'Hide';
+  scanFactsToggle.setAttribute('aria-expanded', String(!scanFactsCollapsed));
+  scanFactsToggle.title = scanFactsCollapsed ? 'Show Facts for Nerds details' : 'Hide Facts for Nerds details';
+}
+
+function renderScanFacts(report, insights, options = {}) {
+  if (!scanFacts || !report) {
+    if (scanFacts) scanFacts.hidden = true;
+    return;
+  }
+
+  const facts = aggregateScanFacts(report, insights);
+  const rowsPerCall = facts.apiCalls ? facts.rowsReturned / facts.apiCalls : 0;
+  const totalPayloadBytes = facts.requestBytes + facts.responseBytes;
+  const payloadPerRow = facts.rowsReturned ? totalPayloadBytes / facts.rowsReturned : 0;
+  scanFacts.hidden = false;
+  scanFacts.dataset.delivery = report.delivery?.source || 'unknown';
+  syncScanFactsToggle();
+  updateScanFactMeters(facts, totalPayloadBytes);
+  scanFactsUpdated.textContent = report.generatedAt
+    ? `Generated ${new Date(report.generatedAt).toLocaleString()}`
+    : 'Generated time unavailable';
+
+  factApiCalls.textContent = facts.hasMetrics ? number.format(facts.apiCalls) : 'n/a';
+  factApiCallDetail.textContent = `${number.format(facts.datasetCount)} dataset${facts.datasetCount === 1 ? '' : 's'} represented`;
+
+  factRows.textContent = number.format(facts.rowsReturned);
+  factRowsDetail.textContent = `${number.format(facts.groupedRows)} grouped rows after filtering`;
+
+  factPayload.textContent = facts.hasMetrics
+    ? formatBytes(facts.requestBytes + facts.responseBytes)
+    : 'n/a';
+  factPayloadDetail.textContent = facts.hasMetrics
+    ? `${formatBytes(facts.requestBytes)} sent / ${formatBytes(facts.responseBytes)} retrieved`
+    : 'Payload metrics unavailable for older persisted scans';
+
+  factOciLatency.textContent = facts.hasMetrics ? formatDuration(facts.ociLatencyMs) : 'n/a';
+  factOciLatencyDetail.textContent = facts.hasMetrics && facts.apiCalls
+    ? `${formatDuration(facts.ociLatencyMs / facts.apiCalls)} average per OCI call`
+    : 'No fresh OCI call timing';
+
+  factServerLatency.textContent = facts.hasMetrics ? formatDuration(facts.serverLatencyMs) : 'n/a';
+  factServerLatencyDetail.textContent = options.clientElapsedMs
+    ? `${formatDuration(options.clientElapsedMs)} browser-observed scan time`
+    : 'Server timing from API responses';
+
+  factDelivery.textContent = facts.deliveryLabel;
+  factDeliveryDetail.textContent = facts.deliveryDetail;
+
+  if (factRowsPerCall) {
+    factRowsPerCall.textContent = facts.hasMetrics && facts.apiCalls ? compactNumber.format(rowsPerCall) : 'n/a';
+  }
+  if (factPayloadPerRow) {
+    factPayloadPerRow.textContent = facts.hasMetrics && facts.rowsReturned ? formatBytes(payloadPerRow) : 'n/a';
+  }
+  if (factAverageCall) {
+    factAverageCall.textContent = facts.hasMetrics && facts.apiCalls ? formatDuration(facts.ociLatencyMs / facts.apiCalls) : 'n/a';
+  }
+  if (factDatasetCount) {
+    factDatasetCount.textContent = number.format(facts.datasetCount);
+  }
+  renderFactBarList(factOperationMix, facts.operations, 'No SDK operations measured');
+  renderFactBarList(factDatasetMix, facts.datasets, 'No dashboard datasets measured');
+  if (factSlowestCall) {
+    factSlowestCall.textContent = facts.slowestPage ? formatDuration(facts.slowestPage.latencyMs) : 'n/a';
+  }
+  if (factSlowestCallDetail) {
+    factSlowestCallDetail.textContent = facts.slowestPage
+      ? `${facts.slowestPage.dataset} page ${number.format(facts.slowestPage.page)} of ${number.format(facts.slowestPage.pages)}`
+      : 'No page timing available';
+  }
+}
+
+function renderFactBarList(element, rows, emptyText) {
+  if (!element) return;
+  element.replaceChildren();
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'scan-fact-bar-empty';
+    empty.textContent = emptyText;
+    element.appendChild(empty);
+    return;
+  }
+
+  const maxCalls = Math.max(...rows.map((row) => Number(row.calls) || 0), 1);
+  for (const row of rows.slice(0, 6)) {
+    const calls = Number(row.calls) || 0;
+    const percentOfMax = Math.max(5, Math.round((calls / maxCalls) * 100));
+    const percentOfTotal = row.totalCalls ? Math.round((calls / row.totalCalls) * 100) : 0;
+    const item = document.createElement('div');
+    item.className = 'scan-fact-bar-row';
+    item.innerHTML = `
+      <div>
+        <span>${escapeHtml(row.label)}</span>
+        <small>${number.format(calls)} call${calls === 1 ? '' : 's'} · ${percentOfTotal}%</small>
+      </div>
+      <i aria-hidden="true"><b style="width: ${percentOfMax}%"></b></i>
+    `;
+    element.appendChild(item);
+  }
+}
+
+function updateScanFactMeters(facts, totalPayloadBytes) {
+  if (!scanFacts) return;
+  scanFacts.style.setProperty('--fact-api-meter', metricMeter(facts.apiCalls, 30));
+  scanFacts.style.setProperty('--fact-row-meter', metricMeter(facts.rowsReturned, 10000));
+  scanFacts.style.setProperty('--fact-payload-meter', metricMeter(totalPayloadBytes, 1024 * 1024 * 4));
+  scanFacts.style.setProperty('--fact-oci-meter', metricMeter(facts.ociLatencyMs, 60000));
+  scanFacts.style.setProperty('--fact-server-meter', metricMeter(facts.serverLatencyMs, 60000));
+}
+
+function metricMeter(value, fullScale) {
+  const numeric = Math.max(0, Number(value) || 0);
+  if (!numeric) return '0%';
+  return `${Math.max(8, Math.min(100, Math.round((numeric / fullScale) * 100)))}%`;
+}
+
+function aggregateScanFacts(report, insights) {
+  const reports = scanFactReports(report, insights);
+  const deliveries = reports.map((item) => item.delivery || {}).filter(Boolean);
+  const metrics = reports.map((item) => item.scanMetrics).filter(Boolean);
+  const apiCalls = metrics.reduce((sum, item) => sum + (item.apiCalls || 0), 0);
+  const requestBytes = metrics.reduce((sum, item) => sum + (item.requestBytes || 0), 0);
+  const responseBytes = metrics.reduce((sum, item) => sum + (item.responseBytes || 0), 0);
+  const ociLatencyMs = metrics.reduce((sum, item) => sum + (item.ociLatencyMs || 0), 0);
+  const serverLatencyMs = metrics.reduce((sum, item) => sum + (item.serverLatencyMs || 0), 0);
+  const rowsReturned = reports.reduce((sum, item) => (
+    sum + (item.scanMetrics?.rowsReturned ?? item.totals?.rowCount ?? 0)
+  ), 0);
+  const groupedRows = reports.reduce((sum, item) => sum + (item.byGroup?.length || 0), 0);
+  const sources = uniqueSorted(deliveries.map((item) => item.source).filter(Boolean));
+  const cacheHits = deliveries.filter((item) => item.cacheHit).length;
+  const stale = deliveries.filter((item) => item.stale).length;
+  const operations = aggregateOperationMix(metrics, apiCalls);
+  const datasets = aggregateDatasetMix(reports, apiCalls);
+  const slowestPage = slowestScanPage(reports);
+
+  return {
+    hasMetrics: metrics.length > 0,
+    datasetCount: reports.length,
+    apiCalls,
+    requestBytes,
+    responseBytes,
+    ociLatencyMs,
+    serverLatencyMs,
+    rowsReturned,
+    groupedRows,
+    operations,
+    datasets,
+    slowestPage,
+    deliveryLabel: deliveryLabel(report.delivery?.source),
+    deliveryDetail: deliveryDetail(sources, cacheHits, stale, reports.length)
+  };
+}
+
+function aggregateOperationMix(metrics, totalCalls) {
+  const operations = new Map();
+  for (const item of metrics) {
+    const rows = Array.isArray(item.operations) && item.operations.length
+      ? item.operations
+      : [{ operation: 'requestSummarizedUsages', calls: item.apiCalls || 0 }];
+    for (const row of rows) {
+      const key = row.operation || 'requestSummarizedUsages';
+      const current = operations.get(key) || { label: formatOperationName(key), calls: 0, totalCalls };
+      current.calls += Number(row.calls) || 0;
+      operations.set(key, current);
+    }
+  }
+  return Array.from(operations.values()).sort((a, b) => b.calls - a.calls || a.label.localeCompare(b.label));
+}
+
+function aggregateDatasetMix(reports, totalCalls) {
+  return reports
+    .map((report, index) => ({
+      label: scanFactDatasetLabel(report, index),
+      calls: report.scanMetrics?.apiCalls || 0,
+      totalCalls
+    }))
+    .filter((row) => row.calls > 0)
+    .sort((a, b) => b.calls - a.calls || a.label.localeCompare(b.label));
+}
+
+function slowestScanPage(reports) {
+  let slowest;
+  reports.forEach((report, reportIndex) => {
+    const pageLatencies = report.scanMetrics?.pageLatenciesMs || [];
+    pageLatencies.forEach((latencyMs, pageIndex) => {
+      if (!slowest || Number(latencyMs) > slowest.latencyMs) {
+        slowest = {
+          dataset: scanFactDatasetLabel(report, reportIndex),
+          latencyMs: Number(latencyMs) || 0,
+          page: pageIndex + 1,
+          pages: pageLatencies.length
+        };
+      }
+    });
+  });
+  return slowest;
+}
+
+function scanFactReports(report, insights) {
+  return [
+    scanFactReport(report, 'Grouped table'),
+    scanFactReport(insights?.service, 'Service summary'),
+    scanFactReport(insights?.sku, 'SKU detail'),
+    scanFactReport(insights?.compartment, 'Compartment detail'),
+    scanFactReport(insights?.drift, 'Month drift'),
+    scanFactReport(insights?.daily, 'Daily detail')
+  ].filter(Boolean);
+}
+
+function scanFactReport(report, factLabel) {
+  return report ? { ...report, factLabel } : undefined;
+}
+
+function scanFactDatasetLabel(report, index) {
+  if (report.factLabel) return report.factLabel;
+  const groupBy = Array.isArray(report.query?.groupBy) ? report.query.groupBy : [];
+  const granularity = report.query?.granularity || '';
+  const fields = groupBy.filter((field) => field !== 'region');
+  if (index === 0) return 'Grouped table';
+  if (granularity === 'DAILY') return 'Daily detail';
+  if (fields.includes('skuPartNumber') || fields.includes('skuName')) return 'SKU detail';
+  if (fields.includes('compartmentPath')) return 'Compartment detail';
+  if (fields.length === 1 && fields[0] === 'service') return 'Service summary';
+  return fields.length ? fields.map(formatOperationName).join(' + ') : 'Usage dataset';
+}
+
+function formatOperationName(value) {
+  return String(value || '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/^./, (char) => char.toUpperCase());
+}
+
+function deliveryLabel(source) {
+  if (source === 'oci') return 'Fresh OCI';
+  if (source === 'disk') return 'Persisted';
+  if (source === 'memory') return 'Memory';
+  return 'Unknown';
+}
+
+function deliveryDetail(sources, cacheHits, stale, total) {
+  const sourceText = sources.length ? sources.map(deliveryLabel).join(', ') : 'Unknown source';
+  const cacheText = cacheHits ? `${number.format(cacheHits)} cached` : 'no cache hits';
+  const staleText = stale ? `${number.format(stale)} stale/persisted` : 'fresh where available';
+  return `${sourceText} · ${cacheText} · ${staleText} · ${number.format(total)} dataset${total === 1 ? '' : 's'}`;
+}
+
 function scanCompletionDetail(report, insights, elapsedMs, error) {
   const insightNames = ['service', 'sku', 'compartment', 'drift', 'daily'];
   const loadedInsights = insightNames.filter((name) => insights?.[name]);
   const failedInsights = Object.keys(insights?.errors || {}).length + (error ? 1 : 0);
   const reports = [report, ...loadedInsights.map((name) => insights[name])].filter(Boolean);
+  const facts = aggregateScanFacts(report, insights);
   const fetchedRows = reports.reduce((sum, item) => sum + (item.totals?.rowCount || 0), 0);
   const primaryGroups = report?.byGroup?.length || 0;
   const queryCount = 1 + loadedInsights.length + failedInsights;
@@ -3437,8 +4172,12 @@ function scanCompletionDetail(report, insights, elapsedMs, error) {
     `${formatDuration(elapsedMs)} elapsed`,
     `${number.format(fetchedRows)} rows fetched`,
     `${number.format(primaryGroups)} grouped rows`,
-    `${number.format(queryCount)} usage queries`
+    facts.hasMetrics ? `${number.format(facts.apiCalls)} OCI API calls` : `${number.format(queryCount)} usage queries`
   ];
+
+  if (facts.hasMetrics) {
+    parts.push(`${formatBytes(facts.requestBytes)} sent / ${formatBytes(facts.responseBytes)} retrieved`);
+  }
 
   if (failedInsights) {
     parts.push(`${number.format(failedInsights)} chart ${failedInsights === 1 ? 'error' : 'errors'}`);
@@ -3459,6 +4198,13 @@ function formatDuration(ms) {
   const minutes = Math.floor(value / 60000);
   const seconds = Math.round((value % 60000) / 1000);
   return `${number.format(minutes)} min ${number.format(seconds)} sec`;
+}
+
+function formatBytes(bytes) {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value < 1024) return `${number.format(Math.round(value))} B`;
+  if (value < 1024 * 1024) return `${number.format(value / 1024)} KB`;
+  return `${number.format(value / (1024 * 1024))} MB`;
 }
 
 function updateFooterWindow(start, end) {
@@ -3780,17 +4526,37 @@ function sanitizeFilename(value) {
     .toLowerCase() || 'chart';
 }
 
+function sanitizeEndpoint(endpoint) {
+  const [path, query = ''] = String(endpoint || '').split('?');
+  if (!query) return path || 'Unknown';
+  const params = new URLSearchParams(query);
+  if (params.has('tenantId')) params.set('tenantId', '[redacted]');
+  return `${path}?${params.toString()}`;
+}
+
 function uniqueSorted(values) {
   return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 }
 
-function regionColor(region, saturation, lightness, alpha = 1) {
-  let hash = 0;
-  for (const char of String(region || 'Unspecified')) {
-    hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+function configureRegionColors(regions) {
+  const names = uniqueSorted(regions.filter(Boolean));
+  regionHueAssignments.clear();
+  names.forEach((region, index) => {
+    regionHueAssignments.set(region, distinctRegionHues[index] ?? Math.round((index * 137.508 + 216) % 360));
+  });
+}
+
+function regionHue(region) {
+  const key = String(region || 'Unspecified');
+  if (!regionHueAssignments.has(key)) {
+    const index = regionHueAssignments.size;
+    regionHueAssignments.set(key, distinctRegionHues[index] ?? Math.round((hashString(key) * 137.508 + 216) % 360));
   }
-  const hue = hash % 360;
-  return `hsl(${hue} ${saturation}% ${lightness}% / ${alpha})`;
+  return regionHueAssignments.get(key);
+}
+
+function regionColor(region, saturation, lightness, alpha = 1) {
+  return `hsl(${regionHue(region)} ${saturation}% ${lightness}% / ${alpha})`;
 }
 
 function regionSeriesColor(region, alpha = 1) {
@@ -3799,13 +4565,16 @@ function regionSeriesColor(region, alpha = 1) {
 
 function showError(error) {
   setScanState('error', 'Scan failed');
+  setScanProgress(undefined, 'Scan failed', error.message || 'Unable to load usage.', { state: 'error' });
+  showScanError(error);
   statusText.textContent = error.message;
   insightStatus.textContent = '';
   chartNote.textContent = '';
   rowsEl.innerHTML = '';
   resetColumnHeaders();
   drawEmptyChart(usageChart, error.message || 'Unable to load usage.');
-  excelDownload.disabled = false;
+  setDownloadsEnabled(false);
+  if (!currentReport && scanFacts) scanFacts.hidden = true;
 }
 
 function resetColumnHeaders() {

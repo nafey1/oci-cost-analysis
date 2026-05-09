@@ -17,6 +17,15 @@
     <div class="top-actions">
       <span class="scan-status" id="scanStatus">Ready</span>
       <span class="scan-detail" id="scanDetail" hidden></span>
+      <div class="scan-progress" id="scanProgress" aria-label="Scan progress" role="status" aria-live="polite" hidden>
+        <div class="scan-progress-meta">
+          <span id="scanProgressLabel">Idle</span>
+          <strong id="scanProgressPercent">0%</strong>
+        </div>
+        <div class="scan-progress-track" aria-hidden="true">
+          <i id="scanProgressFill"></i>
+        </div>
+      </div>
       <label class="theme-field">
         Theme
         <select id="themeSelector">
@@ -27,7 +36,7 @@
           <option value="ember">Ember</option>
         </select>
       </label>
-      <a class="download" id="csvLink" href="/api/usage.csv">CSV</a>
+      <a class="download" id="csvLink" aria-disabled="true" data-disabled="true" tabindex="-1">CSV</a>
       <button class="download" type="button" id="excelDownload" disabled>Excel</button>
     </div>
   </header>
@@ -80,6 +89,24 @@
       <button type="submit">Refresh</button>
     </form>
 
+    <section class="scan-error-panel" id="scanErrorPanel" aria-live="assertive" hidden>
+      <div class="scan-error-head">
+        <div>
+          <span>Scan failure</span>
+          <h2 id="scanErrorMessage">Scan failed</h2>
+        </div>
+        <button type="button" id="scanErrorDismiss" aria-label="Dismiss scan failure details">Dismiss</button>
+      </div>
+      <div class="scan-error-grid">
+        <span><strong>Phase</strong><b id="scanErrorPhase">Unknown</b></span>
+        <span><strong>Status</strong><b id="scanErrorStatus">Unknown</b></span>
+        <span><strong>Time</strong><b id="scanErrorTime">Unknown</b></span>
+        <span><strong>Endpoint</strong><b id="scanErrorEndpoint">Unknown</b></span>
+      </div>
+      <pre id="scanErrorDetail"></pre>
+      <p id="scanErrorHint"></p>
+    </section>
+
     <section class="period-summary" aria-live="polite">
       <div class="period-summary-head">
         <h2>Billing Period Summary</h2>
@@ -126,6 +153,96 @@
         <span>Rows</span>
         <strong id="rowCount">0</strong>
       </article>
+    </section>
+
+    <section class="scan-facts" id="scanFacts" aria-label="Scan facts" hidden>
+      <div class="scan-facts-head">
+        <div>
+          <span class="scan-facts-kicker">Scan telemetry</span>
+          <h2>Facts for Nerds</h2>
+        </div>
+        <div class="scan-facts-actions">
+          <small id="scanFactsUpdated" class="scan-facts-updated">No scan loaded</small>
+          <button class="scan-facts-toggle" id="scanFactsToggle" type="button" aria-expanded="false" aria-controls="scanFactsDetails">Show</button>
+        </div>
+      </div>
+      <div class="scan-facts-details" id="scanFactsDetails" hidden>
+        <div class="scan-facts-board">
+          <article class="scan-fact scan-fact-source" data-fact="delivery" data-tooltip="Where this dashboard data came from: fresh OCI scan, persisted disk report, or in-memory cache.">
+            <span>Delivery path</span>
+            <strong id="factDelivery">None</strong>
+            <small id="factDeliveryDetail">No report loaded</small>
+            <div class="scan-fact-route" aria-hidden="true">
+              <i>Browser</i>
+              <i>Node</i>
+              <i>OCI</i>
+              <i>Disk</i>
+            </div>
+          </article>
+          <div class="scan-facts-grid">
+            <article class="scan-fact" data-fact="api" data-tooltip="Total OCI Usage API page requests represented by the visible scan and chart datasets. Cached or persisted responses add zero new OCI calls.">
+              <span>OCI API calls</span>
+              <strong id="factApiCalls">0</strong>
+              <small id="factApiCallDetail">No calls yet</small>
+              <div class="scan-fact-meter" aria-hidden="true"><i></i></div>
+            </article>
+            <article class="scan-fact" data-fact="rows" data-tooltip="Raw OCI usage rows returned before dashboard grouping and zero-cost group filtering.">
+              <span>Rows retrieved</span>
+              <strong id="factRows">0</strong>
+              <small id="factRowsDetail">No rows yet</small>
+              <div class="scan-fact-meter" aria-hidden="true"><i></i></div>
+            </article>
+            <article class="scan-fact" data-fact="payload" data-tooltip="Approximate JSON payload size sent to and returned from the OCI SDK calls. This is not exact TCP wire size.">
+              <span>OCI payload</span>
+              <strong id="factPayload">0 B</strong>
+              <small id="factPayloadDetail">0 B sent / 0 B received</small>
+              <div class="scan-fact-meter" aria-hidden="true"><i></i></div>
+            </article>
+            <article class="scan-fact" data-fact="oci-latency" data-tooltip="Sum of measured OCI Usage API request latency across the table and chart datasets.">
+              <span>OCI latency</span>
+              <strong id="factOciLatency">0 ms</strong>
+              <small id="factOciLatencyDetail">No API timing</small>
+              <div class="scan-fact-meter" aria-hidden="true"><i></i></div>
+            </article>
+            <article class="scan-fact" data-fact="server-latency" data-tooltip="Server-side elapsed time spent fetching, building, and preparing report responses.">
+              <span>Server time</span>
+              <strong id="factServerLatency">0 ms</strong>
+              <small id="factServerLatencyDetail">No server timing</small>
+              <div class="scan-fact-meter" aria-hidden="true"><i></i></div>
+            </article>
+          </div>
+        </div>
+        <div class="scan-facts-trace" aria-label="Scan efficiency metrics">
+          <span><strong id="factRowsPerCall">n/a</strong><small>rows / call</small></span>
+          <span><strong id="factPayloadPerRow">n/a</strong><small>payload / row</small></span>
+          <span><strong id="factAverageCall">n/a</strong><small>avg OCI call</small></span>
+          <span><strong id="factDatasetCount">0</strong><small>datasets</small></span>
+        </div>
+        <div class="scan-facts-mix" aria-label="Scan operation mix">
+          <article class="scan-fact-mix" data-tooltip="Breaks down measured OCI SDK calls by operation. Cost Analysis normally uses one operation, but the mix still exposes pagination volume.">
+            <div>
+              <span>Operation mix</span>
+              <small>OCI SDK calls by operation</small>
+            </div>
+            <div class="scan-fact-bars" id="factOperationMix"></div>
+          </article>
+          <article class="scan-fact-mix" data-tooltip="Shows which dashboard datasets drove Usage API calls: the grouped table, chart sources, drift window, and daily detail.">
+            <div>
+              <span>Dataset mix</span>
+              <small>dashboard queries by purpose</small>
+            </div>
+            <div class="scan-fact-bars" id="factDatasetMix"></div>
+          </article>
+          <article class="scan-fact-mix scan-fact-slowest" data-tooltip="Highlights the slowest measured paginated Usage API response across the table and chart datasets.">
+            <div>
+              <span>Slowest page</span>
+              <small>highest measured Usage API page latency</small>
+            </div>
+            <strong id="factSlowestCall">n/a</strong>
+            <small id="factSlowestCallDetail">No page timing available</small>
+          </article>
+        </div>
+      </div>
     </section>
 
     <section class="legend-section" id="regionLegendSection" aria-label="Region Legend" hidden>

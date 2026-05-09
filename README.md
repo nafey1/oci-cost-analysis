@@ -11,6 +11,7 @@ The app uses the local OCI CLI `DEFAULT` profile by default, reads cost data fro
 - Added full SKU-description tooltips for Service Cards With Nested Top SKUs, including grouped rows with multiple descriptions.
 - Disabled annoying inside zoom behavior on Grouped Usage and Compartment Cost by Depth while keeping useful zoom controls on charts that need them.
 - Prevented initial page load from auto-scanning; the dashboard now populates dates and waits for the user to click Refresh.
+- Added file-backed report persistence so the last dashboard scan can reload on page open, and previous matching scans can render immediately while a fresh OCI scan runs.
 
 ## Quick Start
 
@@ -38,6 +39,7 @@ The default local auth path uses `~/.oci/config` with the `DEFAULT` profile. Edi
 - Table filters include All and None actions, typed filtering, region-colored rows, resizable columns, and filtered grand totals.
 - Grouped Usage only displays non-zero cost groups.
 - Billing Period Summary shows analysis days, unique SKUs, active regions, daily average, peak daily cost, total cost, total usage, and row count.
+- Facts for Nerds shows OCI API call count, rows retrieved, approximate JSON payload sent/retrieved, OCI latency, server time, and delivery source.
 - Cost Analytics includes region heat grid, top cost drivers waterfall, service/region matrix, compartment cost by depth, unit economics, SKU Pareto, cost composition, long-tail SKU spend, service/SKU cards, region drift, and daily cost explorer.
 - Charts include tooltips and PNG download buttons.
 - Applicable ECharts legends are clickable and update the chart panel total.
@@ -45,6 +47,7 @@ The default local auth path uses `~/.oci/config` with the `DEFAULT` profile. Edi
 - Excel downloads can export the currently filtered dashboard table.
 - Theme selector includes Light, Dark, Forest, Ocean, and other dashboard themes.
 - Compact footer shows source, profile, analysis window, and last scan timestamp.
+- Persists previous scan JSON to disk so long-running refreshes can show the last matching result first.
 - Docker-ready deployment model keeps OCI config and private keys outside the image.
 
 ## Architecture
@@ -55,10 +58,11 @@ The application is intentionally simple:
 - `src/ociAuth.js` creates the OCI authentication provider.
 - `src/usageClient.js` calls `requestSummarizedUsages` and follows OCI pagination.
 - `src/usageReport.js` normalizes OCI Usage API rows into dashboard/API summaries.
+- `src/reportStore.js` persists completed report JSON files for fast reloads before fresh scans.
 - `src/config.js` centralizes environment config, defaults, grouping options, and query validation.
 - `public/` contains the browser UI, ECharts rendering, styles, and OCI logo.
 
-The app is stateless except for a short in-memory TTL cache used to avoid accidental refresh storms. There is no database, and reports are generated from OCI Usage API responses.
+The app uses a short in-memory TTL cache and an optional file-backed report store. There is no database. Completed reports are generated from OCI Usage API responses and can be saved under `OCI_COST_DATA_DIR` so the dashboard can display a previous matching scan immediately before starting a fresh OCI scan.
 
 ## Requirements
 
@@ -245,19 +249,46 @@ Copy `.env.example` to `.env` and adjust the values you need.
 | `DEFAULT_QUERY_TYPE` | `COST` | `COST`, `USAGE`, or `USAGE_ONLY`. |
 | `DEFAULT_GROUP_BY` | `service` | Comma-separated default grouping fields. |
 | `CACHE_TTL_SECONDS` | `300` | In-memory report cache TTL. Use `0` to disable. |
+| `PERSIST_REPORTS` | `true` | Enables file-backed report persistence for completed scans. |
+| `OCI_COST_DATA_DIR` | `./data` locally, `/app/data` in Docker | Directory where persisted report JSON is stored. Mount this path for container persistence. |
+| `PERSIST_MAX_REPORTS` | `250` | Maximum persisted report files to keep before pruning oldest files. |
 
 ## Dashboard Workflow
 
 1. Confirm `.env` points to the right OCI auth method, profile, tenancy, and Usage API region.
 2. Open the dashboard.
-3. Review the populated default Start and End dates. The app does not auto-scan on initial load.
+3. Review the populated default Start and End dates. The app does not auto-scan on initial load, but it restores the latest persisted dashboard scan if one exists.
 4. Choose granularity, query type, Group By, and compartment depth.
-5. Click Refresh.
+5. Click Refresh. If a persisted report exists for the same normalized query, it renders first while a fresh OCI scan runs in the background.
 6. Review Billing Period Summary and Cost Analytics.
-7. Use Grouped Usage table filters to narrow the visible rows.
-8. Check the Grand Total row after filtering; it reflects the current table filters.
-9. Use clickable chart legends where present to hide or show series and update visible chart totals.
-10. Download CSV for query-level grouped data or Excel for the currently filtered dashboard table.
+7. Review Facts for Nerds when you need API call, payload, latency, cache, or persistence diagnostics.
+8. Use Grouped Usage table filters to narrow the visible rows.
+9. Check the Grand Total row after filtering; it reflects the current table filters.
+10. Use clickable chart legends where present to hide or show series and update visible chart totals.
+11. Download CSV for query-level grouped data or Excel for the currently filtered dashboard table.
+
+### Persistence Flow
+
+```mermaid
+flowchart TD
+  A["Open or reload dashboard"] --> B["Load defaults from /api/defaults"]
+  B --> C["Request latest persisted scan from /api/usage/latest"]
+  C --> D{"Saved scan exists?"}
+  D -- "Yes" --> E["Render saved table and saved chart datasets"]
+  D -- "No" --> F["Show default dates and wait for Refresh"]
+  E --> G["User clicks Refresh"]
+  F --> G
+  G --> H["Request same query with cacheOnly=true"]
+  H --> I{"Matching persisted report exists?"}
+  I -- "Yes" --> J["Show previous matching report immediately"]
+  I -- "No" --> K["Keep current view while scan starts"]
+  J --> L["Force fresh OCI Usage API scan with refresh=true and remember=true"]
+  K --> L
+  L --> M["Build report and chart datasets"]
+  M --> N["Write JSON report files under OCI_COST_DATA_DIR/reports"]
+  N --> O["Update OCI_COST_DATA_DIR/latest-dashboard.json"]
+  O --> P["Render fresh scan and enable CSV/Excel downloads"]
+```
 
 ## Date Window Rules
 
@@ -311,11 +342,34 @@ Query parameters:
 - `compartmentDepth`: optional integer from `0` through `5`
 - `tenantId`: optional tenancy OCID override
 - `includeRows`: set to `true` to include raw OCI rows in the JSON response
+- `cacheOnly`: set to `true` to return only an in-memory or persisted report without calling OCI
+- `refresh`: set to `true` to bypass cached/persisted reports and force a fresh OCI Usage API scan
+- `remember`: set to `true` to mark the completed fresh scan as the latest dashboard scan
 
 Example:
 
 ```bash
 curl "http://localhost:3000/api/usage?start=2025-02-01&end=2025-03-01&granularity=DAILY&queryType=COST&groupBy=service,skuName"
+```
+
+Fast-load an existing persisted scan without calling OCI:
+
+```bash
+curl "http://localhost:3000/api/usage?start=2025-02-01&end=2025-03-01&granularity=DAILY&queryType=COST&groupBy=service,skuName&cacheOnly=true"
+```
+
+Force a fresh scan and persist the result:
+
+```bash
+curl "http://localhost:3000/api/usage?start=2025-02-01&end=2025-03-01&granularity=DAILY&queryType=COST&groupBy=service,skuName&refresh=true&remember=true"
+```
+
+### `GET /api/usage/latest`
+
+Returns the latest persisted dashboard scan without calling OCI. The browser uses this on page load to restore the previous table and any saved chart datasets.
+
+```bash
+curl "http://localhost:3000/api/usage/latest"
 ```
 
 ### `GET /api/usage.csv`
@@ -355,7 +409,10 @@ docker run --rm -p 3000:3000 \
   -e OCI_AUTH_METHOD=config \
   -e OCI_CONFIG_FILE=/home/node/.oci/config \
   -e OCI_PROFILE=DEFAULT \
+  -e PERSIST_REPORTS=true \
+  -e OCI_COST_DATA_DIR=/app/data \
   -v "$HOME/.oci:/home/node/.oci:ro" \
+  -v "$PWD/data:/app/data" \
   oci-cost-analysis
 ```
 
@@ -365,12 +422,20 @@ For OCI-hosted deployment, use `OCI_AUTH_METHOD=instance_principal` or `OCI_AUTH
 
 ### Host Filesystem Mount For Persistence
 
-The app is stateless except for a short in-memory report cache. A process or container restart clears cached reports. The required persistent material is OCI configuration and private keys; keep those on the host and mount them read-only into the container.
+The app can persist completed scan reports as JSON files. This is what enables fast reloads: when the same normalized query is requested again, the dashboard can show the previous matching result immediately and then run a fresh OCI scan.
+
+Two host paths matter:
+
+- OCI credentials: mount read-only to `/home/node/.oci`.
+- Persisted reports: mount read-write to `/app/data`.
+
+Persisted report files contain cost and usage data. Treat this directory as sensitive financial data. Do not bake it into the image and do not commit it to Git.
 
 Example host directory:
 
 ```bash
 mkdir -p "$HOME/.oci"
+mkdir -p "$PWD/data"
 ```
 
 Example container run:
@@ -382,11 +447,14 @@ docker run --rm -p 3000:3000 \
   -e OCI_AUTH_METHOD=config \
   -e OCI_CONFIG_FILE=/home/node/.oci/config \
   -e OCI_PROFILE=DEFAULT \
+  -e PERSIST_REPORTS=true \
+  -e OCI_COST_DATA_DIR=/app/data \
   -v "$HOME/.oci:/home/node/.oci:ro" \
+  -v "$PWD/data:/app/data" \
   oci-cost-analysis
 ```
 
-If you keep `.env` outside the image as a host-managed file, pass it with `--env-file .env`. Do not copy OCI private keys or cost report exports into the Docker image.
+If you keep `.env` outside the image as a host-managed file, pass it with `--env-file .env`. Do not copy OCI private keys, persisted report data, or cost report exports into the Docker image.
 
 ### Docker Compose Example
 
@@ -403,10 +471,51 @@ services:
       OCI_AUTH_METHOD: config
       OCI_CONFIG_FILE: /home/node/.oci/config
       OCI_PROFILE: DEFAULT
+      PERSIST_REPORTS: "true"
+      OCI_COST_DATA_DIR: /app/data
     volumes:
       - ${HOME}/.oci:/home/node/.oci:ro
+      - ./data:/app/data
     restart: unless-stopped
 ```
+
+### Kubernetes Persistent Volume Pattern
+
+For Kubernetes or OpenShift-style deployments, mount a `PersistentVolumeClaim` at `/app/data` and set `OCI_COST_DATA_DIR=/app/data`. Keep OCI credentials separate from persisted reports; use instance/resource principals where possible, or mount config-file credentials from a Secret.
+
+Minimal PVC example:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: oci-cost-analysis-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+```
+
+Deployment volume mount excerpt:
+
+```yaml
+env:
+  - name: PERSIST_REPORTS
+    value: "true"
+  - name: OCI_COST_DATA_DIR
+    value: /app/data
+volumeMounts:
+  - name: report-data
+    mountPath: /app/data
+volumes:
+  - name: report-data
+    persistentVolumeClaim:
+      claimName: oci-cost-analysis-data
+```
+
+If your cluster requires an explicit `PersistentVolume`, bind the PVC to storage that supports `ReadWriteOnce`. Do not use ephemeral `emptyDir` if previous scan reloads must survive pod restarts.
 
 ## Development
 
@@ -423,8 +532,12 @@ npm test
 - CSV and Excel exports should be treated as sensitive financial data.
 - The dashboard hides zero-cost grouped rows by design.
 - The Compartment Depth selector is limited to level 5 to keep hierarchy reporting readable.
-- The app uses a short in-memory cache keyed by normalized query parameters; set `CACHE_TTL_SECONDS=0` if every Refresh must hit OCI.
-- Keep `.env`, OCI private keys, and exported cost reports out of Git.
+- The app uses a short in-memory cache keyed by normalized query parameters; set `CACHE_TTL_SECONDS=0` to disable memory-only reuse.
+- With `PERSIST_REPORTS=true`, every completed scan is written to `OCI_COST_DATA_DIR` and reused as a fast previous result before a fresh scan.
+- Set `PERSIST_REPORTS=false` if the deployment is not allowed to store cost data on disk.
+- Facts for Nerds payload sizes are approximate JSON payload sizes measured around OCI SDK calls, not exact TCP wire bytes.
+- Keep `.env`, OCI private keys, persisted report data, and exported cost reports out of Git.
+- Keep persisted report data out of backups that are not approved for financial data.
 - Prefer instance principal or resource principal for OCI-hosted deployments.
 - Expose the dashboard only on trusted networks unless you add authentication and authorization in front of it.
 
@@ -450,8 +563,14 @@ The dashboard intentionally hides zero-cost grouped rows. If OCI returns only ze
 
 Check that `key_file` inside the mounted config points to a path that exists inside the container. The safest pattern is to keep the key under `$HOME/.oci` and mount that directory to `/home/node/.oci`.
 
+### Previous Scans Do Not Reload
+
+Verify `PERSIST_REPORTS=true`, `OCI_COST_DATA_DIR` points to a writable directory, and the scan completed after this persistence feature was enabled. In Docker, mount a host directory or persistent volume to `/app/data`; without that mount, persisted reports are lost when the container is removed. Older persisted query files without the latest-dashboard pointer can still be reused after Refresh, but page-load restore needs a completed remembered dashboard scan.
+
 ## Repository Update History
 
+- Added file-backed report persistence, page-load last-scan restore, fast previous-scan loading, Docker data-volume guidance, and Kubernetes PVC examples.
+- Added Facts for Nerds scan diagnostics for OCI calls, payload size, latency, cache/persistence source, and server timing.
 - Added repository `AGENTS.md` instructions for future development agents.
 - Reworked README into an operational dashboard guide with Quick Start, Features, Architecture, Requirements, OCI Policy, Local Run, Configuration, Workflow, API, Docker, Development, Operational Notes, and Troubleshooting.
 - Added clickable chart legend behavior with visible-total updates where the chart semantics support it.

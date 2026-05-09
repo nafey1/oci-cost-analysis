@@ -40,12 +40,23 @@ function intEnv(name, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function boolEnv(name, fallback) {
+  const raw = env(name, String(fallback)).toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
+  if (['0', 'false', 'no', 'off'].includes(raw)) return false;
+  return fallback;
+}
+
+function resolveUserPath(value) {
+  return path.resolve(String(value).replace(/^~(?=$|\/)/, process.env.HOME ?? ''));
+}
+
 export function getAppConfig() {
   const defaultWindow = lastWholeMonthWindow();
   return {
     port: intEnv('PORT', 3000),
     authMethod: env('OCI_AUTH_METHOD', 'config').toLowerCase(),
-    configFile: path.resolve(env('OCI_CONFIG_FILE', '~/.oci/config').replace(/^~(?=$|\/)/, process.env.HOME ?? '')),
+    configFile: resolveUserPath(env('OCI_CONFIG_FILE', '~/.oci/config')),
     profile: env('OCI_PROFILE', 'DEFAULT'),
     tenancyId: env('OCI_TENANCY_OCID'),
     usageRegion: env('OCI_USAGE_REGION', env('OCI_REGION', 'us-ashburn-1')),
@@ -56,7 +67,12 @@ export function getAppConfig() {
       queryType: env('DEFAULT_QUERY_TYPE', 'COST').toUpperCase(),
       groupBy: env('DEFAULT_GROUP_BY', 'service')
     },
-    cacheTtlSeconds: intEnv('CACHE_TTL_SECONDS', 300)
+    cacheTtlSeconds: intEnv('CACHE_TTL_SECONDS', 300),
+    persistence: {
+      enabled: boolEnv('PERSIST_REPORTS', true),
+      dataDir: resolveUserPath(env('OCI_COST_DATA_DIR', './data')),
+      maxReports: intEnv('PERSIST_MAX_REPORTS', 250)
+    }
   };
 }
 
