@@ -4,7 +4,7 @@ Node.js and Express dashboard for scanning Oracle Cloud Infrastructure Cost Anal
 
 The app uses the local OCI CLI `DEFAULT` profile by default, reads cost data from the tenancy home region, and renders an interactive browser dashboard for grouped usage, service/SKU spend, region activity, compartment cost, daily trends, and billing-period summaries.
 
-![OCI Cost Analysis Dashboard walkthrough](docs/images/oci-cost-analysis-dashboard.gif)
+![Annotated OCI Cost Analysis Dashboard walkthrough](docs/images/oci-cost-analysis-dashboard.gif)
 
 ## Quick Start
 
