@@ -52,6 +52,7 @@ const driftChart = document.querySelector('#driftChart');
 const serviceSkuChart = document.querySelector('#serviceSkuChart');
 const regionLegendSection = document.querySelector('#regionLegendSection');
 const regionLegend = document.querySelector('#regionLegend');
+const regionLegendToggle = document.querySelector('#regionLegendToggle');
 const billingSummaryWindow = document.querySelector('#billingSummaryWindow');
 const billingSummaryDays = document.querySelector('#billingSummaryDays');
 const uniqueSkuCount = document.querySelector('#uniqueSkuCount');
@@ -126,6 +127,7 @@ const number = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
 const percent = new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 1 });
 const compactNumber = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
 const scanFactsCollapsedStorageKey = 'oci-cost:facts-collapsed:v2';
+const regionLegendCollapsedStorageKey = 'oci-cost:region-legend-collapsed:v1';
 let groupByOptions = [];
 let currentReport;
 let currentInsights;
@@ -139,6 +141,7 @@ let regionLegendSort = { key: 'cost', direction: 'desc' };
 let currentScanProgressValue = 0;
 let currentScanPhase = 'Idle';
 let scanFactsCollapsed = loadScanFactsCollapsed();
+let regionLegendCollapsed = loadRegionLegendCollapsed();
 
 const charts = new Map();
 const regionHueAssignments = new Map();
@@ -256,6 +259,12 @@ regionLegend.addEventListener('click', (event) => {
     direction: regionLegendSort.key === key && regionLegendSort.direction === 'asc' ? 'desc' : 'asc'
   };
   renderRegionLegend(currentReport.byGroup || []);
+});
+
+regionLegendToggle.addEventListener('click', () => {
+  regionLegendCollapsed = !regionLegendCollapsed;
+  saveRegionLegendCollapsed(regionLegendCollapsed);
+  syncRegionLegendToggle();
 });
 
 window.addEventListener('resize', () => {
@@ -2859,6 +2868,7 @@ function renderRegionLegend(rows) {
   regionLegendSection.hidden = !regions.length;
   if (!regions.length) {
     regionLegend.innerHTML = '';
+    syncRegionLegendToggle();
     return;
   }
 
@@ -2888,6 +2898,7 @@ function renderRegionLegend(rows) {
       </tbody>
     </table>
   `;
+  syncRegionLegendToggle();
 }
 
 function regionLegendHeader(key, label) {
@@ -3908,12 +3919,37 @@ function saveScanFactsCollapsed(value) {
   }
 }
 
+function loadRegionLegendCollapsed() {
+  try {
+    const stored = window.localStorage.getItem(regionLegendCollapsedStorageKey);
+    return stored === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function saveRegionLegendCollapsed(value) {
+  try {
+    window.localStorage.setItem(regionLegendCollapsedStorageKey, String(Boolean(value)));
+  } catch {
+    // Ignore storage failures; the toggle still works for this page view.
+  }
+}
+
 function syncScanFactsToggle() {
   if (!scanFactsToggle || !scanFactsDetails) return;
   scanFactsDetails.hidden = scanFactsCollapsed;
   scanFactsToggle.textContent = scanFactsCollapsed ? 'Show' : 'Hide';
   scanFactsToggle.setAttribute('aria-expanded', String(!scanFactsCollapsed));
   scanFactsToggle.title = scanFactsCollapsed ? 'Show Facts for Nerds details' : 'Hide Facts for Nerds details';
+}
+
+function syncRegionLegendToggle() {
+  if (!regionLegendToggle || !regionLegend) return;
+  regionLegend.hidden = regionLegendCollapsed;
+  regionLegendToggle.textContent = regionLegendCollapsed ? 'Show' : 'Hide';
+  regionLegendToggle.setAttribute('aria-expanded', String(!regionLegendCollapsed));
+  regionLegendToggle.title = regionLegendCollapsed ? 'Show Region Legend' : 'Hide Region Legend';
 }
 
 function renderScanFacts(report, insights, options = {}) {

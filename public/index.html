@@ -16,7 +16,6 @@
     </div>
     <div class="top-actions">
       <span class="scan-status" id="scanStatus">Ready</span>
-      <span class="scan-detail" id="scanDetail" hidden></span>
       <div class="scan-progress" id="scanProgress" aria-label="Scan progress" role="status" aria-live="polite" hidden>
         <div class="scan-progress-meta">
           <span id="scanProgressLabel">Idle</span>
@@ -88,6 +87,7 @@
       </label>
       <button type="submit">Refresh</button>
     </form>
+    <span class="scan-detail" id="scanDetail" aria-live="polite" hidden></span>
 
     <section class="scan-error-panel" id="scanErrorPanel" aria-live="assertive" hidden>
       <div class="scan-error-head">
@@ -248,6 +248,7 @@
     <section class="legend-section" id="regionLegendSection" aria-label="Region Legend" hidden>
       <div class="legend-head">
         <h2>Region Legend</h2>
+        <button class="legend-toggle" id="regionLegendToggle" type="button" aria-expanded="true" aria-controls="regionLegend">Hide</button>
       </div>
       <div class="region-legend" id="regionLegend"></div>
     </section>

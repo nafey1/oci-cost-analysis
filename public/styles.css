@@ -197,19 +197,20 @@ summary {
 }
 
 .scan-detail {
-  align-self: flex-end;
-  max-width: min(620px, 44vw);
-  min-height: 40px;
-  display: inline-flex;
+  min-height: 38px;
+  display: flex;
   align-items: center;
-  padding: 8px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  width: 100%;
+  margin: 10px 0 16px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #e8eef6;
+  background: color-mix(in srgb, var(--panel), var(--paper) 36%);
+  color: var(--ink);
   font-size: 0.78rem;
   font-weight: 750;
   line-height: 1.35;
+  box-shadow: inset 4px 0 0 color-mix(in srgb, var(--brand), var(--line) 24%);
 }
 
 .scan-detail[hidden] {
@@ -217,13 +218,15 @@ summary {
 }
 
 .scan-detail[data-state="complete"] {
-  background: rgba(47, 143, 100, 0.2);
-  border-color: rgba(118, 210, 163, 0.34);
+  background: color-mix(in srgb, #2f8f64, var(--panel) 90%);
+  border-color: color-mix(in srgb, #76d2a3, var(--line) 62%);
+  box-shadow: inset 4px 0 0 #2f8f64;
 }
 
 .scan-detail[data-state="error"] {
-  background: rgba(139, 58, 58, 0.22);
-  border-color: rgba(255, 180, 180, 0.32);
+  background: color-mix(in srgb, #8b3a3a, var(--panel) 88%);
+  border-color: color-mix(in srgb, #ffb4b4, var(--line) 58%);
+  box-shadow: inset 4px 0 0 #8b3a3a;
 }
 
 .scan-progress {
@@ -1286,6 +1289,22 @@ select {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.legend-toggle {
+  min-height: 28px;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--brand), var(--line) 48%);
+  background: color-mix(in srgb, var(--brand), var(--panel) 82%);
+  color: var(--ink);
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
+.legend-toggle:hover,
+.legend-toggle:focus-visible {
+  background: var(--brand);
+  color: #fff;
 }
 
 .region-legend {
